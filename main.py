@@ -18,7 +18,8 @@ DEFAULT_HL = "en"
 DEFAULT_LOCATION = "Kathmandu, Nepal"
 
 
-st.set_page_config(layout="wide", page_title="Google Talent Sourcing (Serper)")
+
+st.set_page_config(layout="wide", page_title="Google Talent Sourcing")
 
 st.title("🔎 Talent Sourcing via Google (Serper)")
 st.caption("Fan-out query variants to discover personal resumes/portfolios at scale. De-duplicate by URL and host for diversity.")
@@ -62,6 +63,153 @@ def _serper_page(query: str, page: int, gl: str=None, hl: str=None, location: st
     return r.json()
 
 
+# NEW: role variant builder based on the base query text
+def build_role_variants_from_query(base_query: str, role_synonyms_enabled: bool = True):
+    """
+    Infer buckets (backend/frontend/devops/…) from the user's query and return a
+    compact list of quoted role phrases tailored to that intent.
+
+    Keeps the previous behavior if synonyms are disabled, but still tries to
+    align the single role with the query.
+
+    Examples:
+      - "IoT python developer" -> ["\"iot engineer\"", "\"embedded engineer\"", ...]
+      - "data engineer spark" -> ["\"data engineer\"", "\"etl engineer\"", ...]
+    """
+    q = (base_query or "").lower()
+
+    # Buckets with trigger keywords
+    buckets = {
+        "backend": [
+            "backend", "back-end", "server", "api", "django", "flask", "fastapi",
+            "spring", "spring boot", "laravel", "node", "express", "rails", "golang", "rust"
+        ],
+        "frontend": [
+            "frontend", "front-end", "react", "vue", "nuxt", "next", "angular", "svelte",
+            "ui developer", "web developer", "javascript developer"
+        ],
+        "devops": [
+            "devops", "sre", "site reliability", "platform engineer", "kubernetes",
+            "k8s", "docker", "terraform", "ansible", "jenkins", "cicd", "ci/cd", "aws", "gcp", "azure"
+        ],
+        "mobile": [
+            "mobile", "android", "kotlin", "java android", "ios", "swift", "react native", "flutter"
+        ],
+        "data": [
+            "data engineer", "data engineering", "spark", "hadoop", "etl", "elt", "snowflake",
+            "databricks", "airflow", "bigquery", "redshift"
+        ],
+        "mlai": [
+            "machine learning", "ml engineer", "mlops", "deep learning", "pytorch",
+            "tensorflow", "sklearn", "llm", "nlp", "computer vision", "genai", "generative ai"
+        ],
+        "qa": [
+            "qa", "quality assurance", "test automation", "sdet", "selenium", "cypress", "playwright"
+        ],
+        "security": [
+            "security", "appsec", "cloud security", "penetration testing", "pentest", "soc", "siem", "devsecops"
+        ],
+        "cloud": [
+            "cloud", "aws", "gcp", "azure", "cloud architect", "cloud engineer"
+        ],
+        "iot": [
+            "iot", "internet of things", "embedded", "firmware", "rtos", "microcontroller",
+            "stm32", "arduino", "esp32", "bluetooth low energy", "ble", "edge"
+        ],
+        "fullstack": [
+            "full stack", "full-stack", "mern", "mean", "t3 stack", "nextjs", "next.js"
+        ],
+        "game": [
+            "game", "unity", "unreal", "godot", "gameplay programmer"
+        ],
+        "blockchain": [
+            "blockchain", "web3", "solidity", "smart contract", "defi"
+        ],
+    }
+
+    # Canonical role expansions per bucket (keep short, high-signal)
+    expansions = {
+        "backend": [
+            '"backend developer"', '"backend engineer"', '"python developer"', '"django developer"',
+            '"node.js developer"', '"express developer"', '"spring boot developer"', '"golang developer"'
+        ],
+        "frontend": [
+            '"frontend developer"', '"frontend engineer"', '"react developer"', '"next.js developer"',
+            '"vue developer"', '"angular developer"', '"ui developer"'
+        ],
+        "devops": [
+            '"devops engineer"', '"site reliability engineer"', '"platform engineer"', '"cloud devops engineer"',
+            '"kubernetes engineer"'
+        ],
+        "mobile": [
+            '"android developer"', '"ios developer"', '"mobile developer"', '"react native developer"', '"flutter developer"'
+        ],
+        "data": [
+            '"data engineer"', '"etl engineer"', '"data pipeline engineer"', '"big data engineer"'
+        ],
+        "mlai": [
+            '"machine learning engineer"', '"ml engineer"', '"mlops engineer"', '"computer vision engineer"', '"nlp engineer"'
+        ],
+        "qa": [
+            '"qa engineer"', '"sdet"', '"test automation engineer"', '"quality assurance engineer"'
+        ],
+        "security": [
+            '"application security engineer"', '"security engineer"', '"devsecops engineer"', '"penetration tester"'
+        ],
+        "cloud": [
+            '"cloud engineer"', '"cloud architect"', '"aws engineer"', '"gcp engineer"', '"azure engineer"'
+        ],
+        "iot": [
+            '"iot engineer"', '"embedded engineer"', '"firmware engineer"', '"embedded linux engineer"'
+        ],
+        "fullstack": [
+            '"full stack developer"', '"full stack engineer"', '"mern developer"', '"next.js full stack developer"'
+        ],
+        "game": [
+            '"game developer"', '"unity developer"', '"unreal developer"', '"gameplay programmer"'
+        ],
+        "blockchain": [
+            '"blockchain developer"', '"solidity developer"', '"web3 developer"', '"smart contract engineer"'
+        ],
+    }
+
+    # Detect matching buckets
+    matched = set()
+    for bucket, keys in buckets.items():
+        if any(k in q for k in keys):
+            matched.add(bucket)
+
+    if not matched:
+        if role_synonyms_enabled:
+            return [
+                '"backend developer"', '"backend engineer"', '"python developer"', '"node.js developer"',
+                '"django developer"', '"express developer"', '"spring boot developer"'
+            ]
+        else:
+            return ['"backend developer"']
+
+    roles = []
+    if role_synonyms_enabled:
+        for b in matched:
+            roles.extend(expansions.get(b, []))
+    else:
+
+        for b in matched:
+            first = expansions.get(b, [])[:1]
+            roles.extend(first)
+
+    # Dedup while preserving order
+    seen = set()
+    out = []
+    for r in roles:
+        if r not in seen:
+            out.append(r)
+            seen.add(r)
+    return out[:40]  # keep it bounded
+
+# ----------------------------
+# Core fan-out search
+# ----------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_many_google_results(
     base_query: str,
@@ -83,14 +231,14 @@ def get_many_google_results(
     """
 
     if not SERPER_API_KEY:
+        # Return early with helpful marker row; Streamlit UI will show st.error elsewhere.
         return [{"error": "Missing SERPER_API_KEY in environment."}]
 
+    # --- Build query variants ---
     geo = '(nepal OR kathmandu OR lalitpur OR bhaktapur OR pokhara OR biratnagar OR butwal)'
 
-    role_variants = [
-        '"backend developer"', '"backend engineer"', '"python developer"', '"node.js developer"',
-        '"django developer"', '"express developer"', '"spring boot developer"'
-    ] if role_synonyms_enabled else ['"backend developer"']
+    #  Role variants inferred from base_query (keeps your previous default if nothing matches)
+    role_variants = build_role_variants_from_query(base_query, role_synonyms_enabled=role_synonyms_enabled)
 
     intent_variants = ['(cv OR resume OR portfolio)']
 
@@ -202,13 +350,11 @@ def get_many_google_results(
     status.empty()
     return results[:num_results]
 
-# ----------------------------
-# Sidebar controls
-# ----------------------------
-st.sidebar.header("🔧 Search Controls")
+
+st.sidebar.header("Search Controls")
 
 default_query = '("backend developer") AND (CV OR resume OR portfolio) AND Nepal'
-base_query = st.sidebar.text_area("Base query", value=default_query, height=80)
+base_query = st.sidebar.text_area("Base query", value=default_query, height=200)
 
 num_results_to_fetch = st.sidebar.number_input("Target results", min_value=10, max_value=1000, value=100, step=10)
 
@@ -240,7 +386,7 @@ st.sidebar.markdown("---")
 st.sidebar.caption("Powered by Serper API • Remember to set SERPER_API_KEY in your environment.")
 
 
-run_search = st.button("🚀 Run Search", type="primary")
+run_search = st.button("Run Search", type="primary")
 
 
 if run_search:
@@ -280,7 +426,7 @@ if "search_data" in st.session_state and st.session_state["search_data"]:
     st.markdown("### Download All")
     csv_all = df_view.to_csv(index=False).encode("utf-8")
     st.download_button(
-        label="⬇️ Download CSV (All Usable)",
+        label="Download CSV (All Usable)",
         data=csv_all,
         file_name=f"{_safe_filename_from_query(base_query)}_results.csv",
         mime="text/csv"
@@ -289,15 +435,16 @@ if "search_data" in st.session_state and st.session_state["search_data"]:
     st.markdown("---")
     st.markdown("### Review & Save Selected")
 
-
+    # Initialize selection state
     if "selected_items" not in st.session_state:
         st.session_state["selected_items"] = {row["link"]: True for _, row in df_view.iterrows()}
     else:
-
+        # Merge new links into state with default True
         for _, row in df_view.iterrows():
             if row["link"] not in st.session_state["selected_items"]:
                 st.session_state["selected_items"][row["link"]] = True
 
+    # Bulk controls
     c1, c2, c3 = st.columns([1,1,3])
     with c1:
         if st.button("✅ Select All"):
@@ -332,7 +479,7 @@ if "search_data" in st.session_state and st.session_state["search_data"]:
 
     st.markdown("#### Save Selected to a Folder")
     folder_name = st.text_input("Folder name under ./exports/", value="my_search_exports")
-    if st.button("💾 Save Selected as CSV"):
+    if st.button("Save Selected as CSV"):
         if not selected_rows:
             st.warning("No items selected.")
         else:
@@ -347,9 +494,9 @@ if "search_data" in st.session_state and st.session_state["search_data"]:
             except Exception as e:
                 st.error(f"Error saving CSV: {e}")
 
-# Moved the CSV viewer logic into its own function for clarity
+
 def display_csv_viewer():
-    st.markdown("## 📂 View Exported CSVs")
+    st.markdown("## View Exported CSVs")
 
     project_dir = _safe_project_dir()
     exports_dir = os.path.join(project_dir, "exports")
@@ -379,7 +526,7 @@ def display_csv_viewer():
         st.info("No exports directory found yet. Save some results first.")
 
 # Add a button to show the CSV viewer
-if st.button("📊 View Saved Data"):
+if st.button("View Saved Data"):
     st.session_state["show_csv_viewer"] = not st.session_state.get("show_csv_viewer", False)
 
 if st.session_state.get("show_csv_viewer"):
