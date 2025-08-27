@@ -1,210 +1,388 @@
-import streamlit as st
-import requests
 import os
-from dotenv import load_dotenv
+import time
+import json
+import requests
 import pandas as pd
-import time  # For introducing a small delay between API calls if needed
+import streamlit as st
+from urllib.parse import urlparse
+from dotenv import load_dotenv
 
-# Load environment variables
+
 load_dotenv()
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+SERPER_URL = "https://google.serper.dev/search"
+SERPER_HEADERS = {"X-API-KEY": SERPER_API_KEY or "", "Content-Type": "application/json"}
 
-# --- Serper API Function ---
-@st.cache_data(ttl=3600)  # Cache results for 1 hour to avoid redundant API calls for same query
-def get_google_search_results(query, num_results_to_fetch=100):
+DEFAULT_GL = "np"
+DEFAULT_HL = "en"
+DEFAULT_LOCATION = "Kathmandu, Nepal"
+
+
+st.set_page_config(layout="wide", page_title="Google Talent Sourcing (Serper)")
+
+st.title("🔎 Talent Sourcing via Google (Serper)")
+st.caption("Fan-out query variants to discover personal resumes/portfolios at scale. De-duplicate by URL and host for diversity.")
+
+
+def _host(u: str) -> str:
+    try:
+        return urlparse(u).netloc.lower()
+    except Exception:
+        return ""
+
+def _safe_project_dir() -> str:
+
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        return os.getcwd()
+
+def _safe_filename_from_query(q: str) -> str:
+    return "".join([c if c.isalnum() or c in (" ", "_", "-") else "" for c in q]).strip().replace(" ", "_").lower()
+
+def _serper_page(query: str, page: int, gl: str=None, hl: str=None, location: str=None, tbs: str=None, num: int = None):
+    """
+    Single Serper request for one page.
+    - query: search string
+    - page: 1-based page index
+    Optional:
+      gl: country code (e.g., "np"), hl: lang (e.g., "en"), location: city string
+      tbs: time-based search ("qdr:m","qdr:y", etc.)
+      num: Requested results count. Serper's /search supports 10 by default; keep None or 10.
+    """
+    payload = {"q": query, "page": page}
+    if gl: payload["gl"] = gl
+    if hl: payload["hl"] = hl
+    if location: payload["location"] = location
+    if tbs: payload["tbs"] = tbs
+    if num: payload["num"] = num
+
+    r = requests.post(SERPER_URL, headers=SERPER_HEADERS, json=payload, timeout=25)
+    r.raise_for_status()
+    return r.json()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_many_google_results(
+    base_query: str,
+    num_results: int = 100,
+    gl: str = DEFAULT_GL,
+    hl: str = DEFAULT_HL,
+    location: str = DEFAULT_LOCATION,
+    tbs: str = None,           # e.g., "qdr:y" (last year) or "qdr:m" (last month)
+    max_pages_per_query: int = 5,
+    polite_delay: float = 0.4,
+    enable_site_variants: bool = True,
+    enable_filetype_variants: bool = True,
+    enable_intitle_inurl_variants: bool = True,
+    role_synonyms_enabled: bool = True,
+):
+    """
+    Fan-out across multiple query variants, aggregate + dedupe by URL and host.
+    Returns: list of dicts: {query_variant, link, title, snippet}
+    """
+
     if not SERPER_API_KEY:
-        st.error("SERPER_API_KEY not found in .env file. Please set it up.")
-        return []
+        return [{"error": "Missing SERPER_API_KEY in environment."}]
 
-    url = "https://google.serper.dev/search"
-    headers = {
-        'X-API-KEY': SERPER_API_KEY,
-        'Content-Type': 'application/json'
-    }
+    geo = '(nepal OR kathmandu OR lalitpur OR bhaktapur OR pokhara OR biratnagar OR butwal)'
 
-    all_results = []
-    max_results_per_page = 10  # Serper API returns up to 10 results per request
+    role_variants = [
+        '"backend developer"', '"backend engineer"', '"python developer"', '"node.js developer"',
+        '"django developer"', '"express developer"', '"spring boot developer"'
+    ] if role_synonyms_enabled else ['"backend developer"']
 
-    num_pages = (num_results_to_fetch + max_results_per_page - 1) // max_results_per_page
-    
-    status_message = st.empty() # Placeholder for status updates
+    intent_variants = ['(cv OR resume OR portfolio)']
 
-    for page in range(num_pages):
-        # Stop if we've already collected enough results
-        if len(all_results) >= num_results_to_fetch:
+    intitle_inurl_variants = [
+        'intitle:resume', 'intitle:portfolio', 'inurl:resume', 'inurl:cv'
+    ] if enable_intitle_inurl_variants else []
+
+    filetype_variants = [
+        'filetype:pdf (resume OR cv)', 'filetype:doc OR filetype:docx "resume"'
+    ] if enable_filetype_variants else []
+
+    site_variants = [
+        'site:github.io', 'site:wixsite.com', 'site:canva.site', 'site:notion.site',
+        'site:about.me', 'site:googleusercontent.com'
+    ] if enable_site_variants else []
+
+    # Start with user’s base query to respect input
+    variants = [base_query.strip()]
+
+    # Structured combinations: role + intent + geo
+    for role in role_variants:
+        for intent in intent_variants:
+            variants.append(f'{role} {intent} {geo}')
+
+    # Add intitle/inurl flavors
+    for role in role_variants:
+        for ii in intitle_inurl_variants:
+            variants.append(f'{role} {ii} {geo}')
+
+    # Add filetype flavors
+    for role in role_variants:
+        for ft in filetype_variants:
+            variants.append(f'{role} {ft} {geo}')
+
+    # Add site flavors (role + geo + site)
+    for role in role_variants:
+        for site in site_variants:
+            variants.append(f'{role} {geo} {site}')
+
+    # Deduplicate textual variants & keep order
+    seen_v = set()
+    clean_variants = []
+    for v in variants:
+        vv = " ".join(v.split())  # normalize spaces
+        if vv and vv not in seen_v:
+            clean_variants.append(vv)
+            seen_v.add(vv)
+
+    # --- Fan-out search ---
+    results = []
+    seen_urls, seen_hosts = set(), set()
+    status = st.empty()
+
+    for vi, q in enumerate(clean_variants, start=1):
+        if len(results) >= num_results:
             break
-
-        payload = {
-            "q": query,
-            "page": page + 1  # Serper uses 'page' for pagination, starting from 1
-        }
-
-        try:
-            status_message.info(f"Fetching page {page + 1}/{num_pages} (collected {len(all_results)}/{num_results_to_fetch} results so far)...")
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()  # Corrected: It's 'raise_for_status()'
-            data = response.json()
-
-            if 'organic' in data:
-                for result in data['organic']:
-                    all_results.append({
-                        'link': result.get('link'),
-                        'title': result.get('title'),
-                        'snippet': result.get('snippet')
-                    })
-
-            # If Serper indicates no more results, or we've reached the end of available results
-            if 'organic' not in data or len(data['organic']) < max_results_per_page:
-                status_message.warning(f"Serper API returned fewer than requested results for page {page + 1} or no more results available. Stopping pagination.")
+        for page in range(1, max_pages_per_query + 1):
+            if len(results) >= num_results:
+                break
+            status.info(f'🔎 Searching variant {vi}/{len(clean_variants)} — page {page} … '
+                        f'Collected {len(results)}/{num_results}')
+            try:
+                data = _serper_page(q, page, gl=gl, hl=hl, location=location, tbs=tbs)
+            except requests.RequestException as e:
+                # If a variant fails, continue to the next
+                results.append({
+                    "query_variant": q,
+                    "link": None,
+                    "title": f"[ERROR] {str(e)}",
+                    "snippet": ""
+                })
                 break
 
-            # Introduce a small delay between API calls to be polite and avoid rate limits
-            if page < num_pages - 1 and len(all_results) < num_results_to_fetch:  # Don't delay after the last call or if we have enough
-                time.sleep(0.5)  # Half-second delay
+            organic = data.get('organic', []) or []
+            if not organic:
+                # No more results for this variant
+                break
 
-        except requests.exceptions.RequestException as e:
-            status_message.error(f"Error calling Serper API on page {page + 1}: {e}")
-            break  # Stop trying to fetch more if an error occurs
-    
-    status_message.empty() # Clear the status message once done
-    return all_results[:num_results_to_fetch]  # Ensure we return exactly what was requested (or less if not available)
+            page_got_new = False
+            for item in organic:
+                link = item.get('link')
+                if not link:
+                    continue
+                host = _host(link)
+                # Dedup by exact URL and host (host-diversity for portfolios)
+                if (link in seen_urls) or (host in seen_hosts):
+                    continue
 
-# --- Streamlit UI ---
-st.set_page_config(layout="wide", page_title="Google Search Extractor")
-st.title("🔗 Google Search Link Extractor & Reviewer")
+                seen_urls.add(link)
+                seen_hosts.add(host)
+                results.append({
+                    "query_variant": q,
+                    "link": link,
+                    "title": item.get('title', ''),
+                    "snippet": item.get('snippet', '')
+                })
+                page_got_new = True
 
-st.markdown("""
-This application allows you to search Google and extract result links, titles, and snippets.
-You can specify the number of results, then save all found data or review and select them individually before saving to a CSV file in a specified folder.
-""")
+                if len(results) >= num_results:
+                    break
 
-st.markdown("---")
-st.header("1. Enter Search Query")
-search_query = st.text_input("Enter your search query:", placeholder="e.g., 'best AI tools 2023'", key="search_query_input")
+            # If nothing new on this page (likely duplicates), or the page has <10 organic items → stop paging this variant
+            if not page_got_new or len(organic) < 10:
+                break
 
-col1, col2 = st.columns([1, 2])
-with col1:
-    num_results_input_str = st.text_input("Number of results to fetch (10-500):", value="100", key="num_results_input")
-    num_results_to_fetch = 100 # Default value
-    try:
-        num_results_to_fetch = int(num_results_input_str)
-        if not (10 <= num_results_to_fetch <= 500):
-            st.warning("Please enter a number between 10 and 500.")
-            num_results_to_fetch = 100 # Revert to default if out of range
-    except ValueError:
-        st.warning("Please enter a valid integer for number of results.")
-        num_results_to_fetch = 100 # Revert to default if invalid
+            if polite_delay:
+                time.sleep(polite_delay)
 
-with col2:
-    st.markdown("<br>", unsafe_allow_html=True) # Add some space
-    if st.button("🚀 Search Google", type="primary"):
-        if search_query:
-            with st.spinner(f"Fetching up to {num_results_to_fetch} search results... This might take a moment."):
-                search_data = get_google_search_results(search_query, num_results_to_fetch)
-                st.session_state['search_data'] = search_data
-                # Initialize selected state for each item, default to True
-                st.session_state['selected_items'] = {item['link']: True for item in search_data if item['link']}
-                if search_data:
-                    st.success(f"Successfully fetched {len(search_data)} results.")
-                else:
-                    st.warning("No results found for your query.")
-        else:
-            st.warning("Please enter a search query before searching.")
+    status.empty()
+    return results[:num_results]
 
-# --- Display Results and Export Options ---
-if 'search_data' in st.session_state and st.session_state['search_data']:
-    st.markdown("---")
-    st.header(f"2. Results for '{search_query}' ({len(st.session_state['search_data'])} found)")
+# ----------------------------
+# Sidebar controls
+# ----------------------------
+st.sidebar.header("🔧 Search Controls")
 
-    # Option to save all at once
-    st.subheader("Download All Found Data")
-    df_full = pd.DataFrame(st.session_state['search_data'])
-    
-    col_dl_all, col_dl_all_spacer = st.columns([2, 5])
-    with col_dl_all:
-        csv_full_file = df_full.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download All Results as CSV",
-            data=csv_full_file,
-            file_name=f"{search_query.replace(' ', '_').lower()}_all_results.csv",
-            mime="text/csv",
-            help="Download a CSV containing all fetched links, titles, and snippets."
-        )
+default_query = '("backend developer") AND (CV OR resume OR portfolio) AND Nepal'
+base_query = st.sidebar.text_area("Base query", value=default_query, height=80)
 
-    st.markdown("---")
-    st.header("3. Review and Select Specific Items to Save")
+num_results_to_fetch = st.sidebar.number_input("Target results", min_value=10, max_value=1000, value=100, step=10)
 
-    # Bulk Selection/Deselection Buttons within a form for proper state management
-    with st.form("bulk_selection_form"):
-        col_select_all, col_deselect_all, col_selected_count = st.columns([1, 1, 3])
-        
-        with col_select_all:
-            if st.form_submit_button("✅ Select All"):
-                st.session_state['selected_items'] = {link: True for link in st.session_state['selected_items']}
-                # No rerun needed here, the changes will be reflected in the next render cycle
-        with col_deselect_all:
-            if st.form_submit_button("❌ Deselect All"):
-                st.session_state['selected_items'] = {link: False for link in st.session_state['selected_items']}
-                # No rerun needed here either
-        with col_selected_count:
-            selected_count = sum(1 for v in st.session_state['selected_items'].values() if v)
-            st.metric(label="Items Selected", value=selected_count)
-        
-        # This submit button is just for the bulk actions, not the individual items.
-        # Streamlit forms simplify state management for groups of inputs.
+col_loc1, col_loc2 = st.sidebar.columns(2)
+with col_loc1:
+    gl = st.text_input("gl (country)", value=DEFAULT_GL, help="Country code (e.g., np, in, us)")
+with col_loc2:
+    hl = st.text_input("hl (lang)", value=DEFAULT_HL, help="Language (e.g., en, ne)")
 
-    st.markdown("Use the checkboxes below to select the items you wish to save.")
-    st.markdown("---")
-    
-    selected_data_for_export = []
+location = st.sidebar.text_input("location", value=DEFAULT_LOCATION, help='E.g., "Kathmandu, Nepal"')
 
-    # Display results directly without expanders
-    for i, item in enumerate(st.session_state['search_data']):
-        link = item.get('link')
-        title = item.get('title', 'No Title')
-        snippet = item.get('snippet', 'No snippet available.')
+tbs = st.sidebar.selectbox(
+    "Time filter (tbs)",
+    options=[None, "qdr:d", "qdr:w", "qdr:m", "qdr:y"],
+    index=0,
+    help="Optional recency filter: day/week/month/year"
+)
 
-        if link:
-            # Checkbox for each item
-            st.session_state['selected_items'][link] = st.checkbox(
-                f"**{i+1}. {title}**",
-                value=st.session_state['selected_items'].get(link, True), # Get current state or default to True
-                key=f"checkbox_{i}_{link}" # Unique key for each checkbox
+max_pages_per_query = st.sidebar.slider("Max pages per variant", min_value=1, max_value=10, value=5)
+polite_delay = st.sidebar.slider("Delay between pages (s)", min_value=0.0, max_value=2.0, value=0.4)
+
+st.sidebar.markdown("**Variant Toggles**")
+enable_site_variants = st.sidebar.checkbox("Include site: variants", value=True)
+enable_filetype_variants = st.sidebar.checkbox("Include filetype: variants", value=True)
+enable_intitle_inurl_variants = st.sidebar.checkbox("Include intitle:/inurl:", value=True)
+role_synonyms_enabled = st.sidebar.checkbox("Include role synonyms", value=True)
+
+st.sidebar.markdown("---")
+st.sidebar.caption("Powered by Serper API • Remember to set SERPER_API_KEY in your environment.")
+
+
+run_search = st.button("🚀 Run Search", type="primary")
+
+
+if run_search:
+    if not SERPER_API_KEY:
+        st.error("SERPER_API_KEY not found. Create a .env with SERPER_API_KEY=your_key and restart.")
+    else:
+        with st.spinner(f"Fetching up to {num_results_to_fetch} results…"):
+            data = get_many_google_results(
+                base_query=base_query,
+                num_results=num_results_to_fetch,
+                gl=gl or None,
+                hl=hl or None,
+                location=location or None,
+                tbs=tbs,
+                max_pages_per_query=max_pages_per_query,
+                polite_delay=polite_delay,
+                enable_site_variants=enable_site_variants,
+                enable_filetype_variants=enable_filetype_variants,
+                enable_intitle_inurl_variants=enable_intitle_inurl_variants,
+                role_synonyms_enabled=role_synonyms_enabled,
             )
+        st.session_state["search_data"] = data
 
-            # Display snippet and link
-            st.markdown(f"*{snippet}*")
-            st.markdown(f"🔗 [{link}]({link})")
-            st.markdown("---") # Separator between items
 
-            if st.session_state['selected_items'][link]:
-                selected_data_for_export.append(item)
-    
-    # After the loop, the selected_data_for_export list is fully populated based on current checkbox states.
+if "search_data" in st.session_state and st.session_state["search_data"]:
+    results = st.session_state["search_data"]
 
-    st.subheader("Save Selected Items to a Folder")
-    folder_name = st.text_input("Enter folder name to save CSV (e.g., 'my_search_exports'):", key="folder_name_input_selected")
-    
-    if st.button("Save Selected Items to CSV", type="secondary"):
-        if folder_name:
-            if selected_data_for_export:
-                project_dir = os.path.dirname(os.path.abspath(__file__))
-                export_dir = os.path.join(project_dir, "exports", folder_name)
-                os.makedirs(export_dir, exist_ok=True) 
+    # Filter out errors in view but keep count
+    df = pd.DataFrame(results)
+    total_found = len(df)
+    df_view = df[df["link"].notna()].copy()
 
-                df_to_save_individual = pd.DataFrame(selected_data_for_export)
-                filename_query = "".join([c if c.isalnum() or c in [' ', '_'] else '' for c in search_query]).replace(' ', '_').lower()
-                csv_path = os.path.join(export_dir, f"{filename_query}_selected_results.csv")
-                
-                try:
-                    df_to_save_individual.to_csv(csv_path, index=False)
-                    st.success(f"CSV with {len(selected_data_for_export)} selected items saved to: `{csv_path}`")
-                except Exception as e:
-                    st.error(f"Error saving CSV: {e}")
-            else:
-                st.warning("No items selected to save. Please check the checkboxes above.")
+    st.subheader(f"Results ({len(df_view)}/{total_found} usable links)")
+    st.dataframe(df_view[["title", "link", "snippet", "query_variant"]], use_container_width=True, height=480)
+
+    # Download all
+    st.markdown("### Download All")
+    csv_all = df_view.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="⬇️ Download CSV (All Usable)",
+        data=csv_all,
+        file_name=f"{_safe_filename_from_query(base_query)}_results.csv",
+        mime="text/csv"
+    )
+
+    st.markdown("---")
+    st.markdown("### Review & Save Selected")
+
+
+    if "selected_items" not in st.session_state:
+        st.session_state["selected_items"] = {row["link"]: True for _, row in df_view.iterrows()}
+    else:
+
+        for _, row in df_view.iterrows():
+            if row["link"] not in st.session_state["selected_items"]:
+                st.session_state["selected_items"][row["link"]] = True
+
+    c1, c2, c3 = st.columns([1,1,3])
+    with c1:
+        if st.button("✅ Select All"):
+            for lk in st.session_state["selected_items"].keys():
+                st.session_state["selected_items"][lk] = True
+    with c2:
+        if st.button("❌ Deselect All"):
+            for lk in st.session_state["selected_items"].keys():
+                st.session_state["selected_items"][lk] = False
+    with c3:
+        selected_count = sum(1 for v in st.session_state["selected_items"].values() if v)
+        st.metric("Items Selected", selected_count)
+
+    st.caption("Toggle individual items below:")
+    st.divider()
+
+    selected_rows = []
+    for i, row in df_view.iterrows():
+        link = row["link"]
+        title = row.get("title") or "No Title"
+        snippet = row.get("snippet") or ""
+
+        checked = st.checkbox(f"**{i+1}. {title}**", value=st.session_state["selected_items"].get(link, True), key=f"chk_{i}")
+        st.markdown(f"*{snippet}*")
+        st.markdown(f"🔗 [{link}]({link})")
+        st.markdown(f"<sub><code>{row.get('query_variant','')}</code></sub>", unsafe_allow_html=True)
+        st.markdown("---")
+
+        st.session_state["selected_items"][link] = checked
+        if checked:
+            selected_rows.append(row)
+
+    st.markdown("#### Save Selected to a Folder")
+    folder_name = st.text_input("Folder name under ./exports/", value="my_search_exports")
+    if st.button("💾 Save Selected as CSV"):
+        if not selected_rows:
+            st.warning("No items selected.")
         else:
-            st.error("Please enter a folder name before saving selected items.")
+            project_dir = _safe_project_dir()
+            export_dir = os.path.join(project_dir, "exports", folder_name)
+            os.makedirs(export_dir, exist_ok=True)
+            out_df = pd.DataFrame(selected_rows)
+            out_path = os.path.join(export_dir, f"{_safe_filename_from_query(base_query)}_selected.csv")
+            try:
+                out_df.to_csv(out_path, index=False)
+                st.success(f"Saved {len(out_df)} selected rows to:\n`{out_path}`")
+            except Exception as e:
+                st.error(f"Error saving CSV: {e}")
 
-st.markdown("---")
-st.markdown("Powered by [Serper API](https://serper.dev/) and Streamlit.")
+# Moved the CSV viewer logic into its own function for clarity
+def display_csv_viewer():
+    st.markdown("## 📂 View Exported CSVs")
+
+    project_dir = _safe_project_dir()
+    exports_dir = os.path.join(project_dir, "exports")
+
+    if os.path.isdir(exports_dir):
+        # List folders inside exports
+        folders = [f for f in os.listdir(exports_dir) if os.path.isdir(os.path.join(exports_dir, f))]
+        if folders:
+            selected_folder = st.selectbox("Select export folder", folders)
+            folder_path = os.path.join(exports_dir, selected_folder)
+            # List CSV files in selected folder
+            csv_files = [f for f in os.listdir(folder_path) if f.endswith(".csv")]
+            if csv_files:
+                selected_csv = st.selectbox("Select CSV file", csv_files)
+                csv_path = os.path.join(folder_path, selected_csv)
+                try:
+                    df_csv = pd.read_csv(csv_path)
+                    st.success(f"Showing: `{csv_path}`")
+                    st.dataframe(df_csv, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error reading CSV: {e}")
+            else:
+                st.info("No CSV files found in this folder.")
+        else:
+            st.info("No export folders found in ./exports/.")
+    else:
+        st.info("No exports directory found yet. Save some results first.")
+
+# Add a button to show the CSV viewer
+if st.button("📊 View Saved Data"):
+    st.session_state["show_csv_viewer"] = not st.session_state.get("show_csv_viewer", False)
+
+if st.session_state.get("show_csv_viewer"):
+    display_csv_viewer()
+else:
+    st.info("Enter a base query in the sidebar and click **Run Search** to begin. Click 'View Saved Data' to see your exports.")
