@@ -683,7 +683,25 @@ def advanced_ui():
                     col_phone.write(f"**Phone:** {phone}")
                     
                     if cv_url and cv_url != "-":
-                        st.markdown(f"📄 **CV:** [{cv_url}]({cv_url})")
+                        col_cv, col_dl = st.columns([2,1])
+                        with col_cv:
+                            st.markdown(f"📄 **CV:** [{cv_url}]({cv_url})")
+                        with col_dl:
+                            import requests
+                            try:
+                                response = requests.get(cv_url, timeout=15)
+                                if response.status_code == 200:
+                                    st.download_button(
+                                        label="Download CV",
+                                        data=response.content,
+                                        file_name=cv_url.split("/")[-1],
+                                        mime="application/pdf",
+                                        key=f"download_cv_{cv_url}"
+                                    )
+                                else:
+                                    st.caption("CV not downloadable")
+                            except Exception:
+                                st.caption("CV not downloadable")
                     else:
                         st.markdown("**No CV**")
 
