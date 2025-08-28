@@ -1,6 +1,6 @@
 import os
 import time
-import json
+import json 
 import requests
 import pandas as pd
 import streamlit as st
@@ -18,11 +18,10 @@ DEFAULT_HL = "en"
 DEFAULT_LOCATION = "Kathmandu, Nepal"
 
 
+st.set_page_config(layout="wide", page_title="Google Talent Sourcing (Simple & Advanced)")
 
-st.set_page_config(layout="wide", page_title="Google Talent Sourcing")
-
-st.title("🔎 Talent Sourcing via Google (Serper)")
-st.caption("Fan-out query variants to discover personal resumes/portfolios at scale. De-duplicate by URL and host for diversity.")
+st.title("🔎 Google Talent Sourcing (Serper)")
+st.caption("Switch between a simple extractor and an advanced, role-aware fan-out search. Export results and review selections with ease.")
 
 
 def _host(u: str) -> str:
@@ -32,7 +31,6 @@ def _host(u: str) -> str:
         return ""
 
 def _safe_project_dir() -> str:
-
     try:
         return os.path.dirname(os.path.abspath(__file__))
     except NameError:
@@ -63,22 +61,13 @@ def _serper_page(query: str, page: int, gl: str=None, hl: str=None, location: st
     return r.json()
 
 
-# NEW: role variant builder based on the base query text
 def build_role_variants_from_query(base_query: str, role_synonyms_enabled: bool = True):
     """
     Infer buckets (backend/frontend/devops/…) from the user's query and return a
     compact list of quoted role phrases tailored to that intent.
-
-    Keeps the previous behavior if synonyms are disabled, but still tries to
-    align the single role with the query.
-
-    Examples:
-      - "IoT python developer" -> ["\"iot engineer\"", "\"embedded engineer\"", ...]
-      - "data engineer spark" -> ["\"data engineer\"", "\"etl engineer\"", ...]
     """
     q = (base_query or "").lower()
 
-    # Buckets with trigger keywords
     buckets = {
         "backend": [
             "backend", "back-end", "server", "api", "django", "flask", "fastapi",
@@ -127,7 +116,6 @@ def build_role_variants_from_query(base_query: str, role_synonyms_enabled: bool 
         ],
     }
 
-    # Canonical role expansions per bucket (keep short, high-signal)
     expansions = {
         "backend": [
             '"backend developer"', '"backend engineer"', '"python developer"', '"django developer"',
@@ -173,7 +161,6 @@ def build_role_variants_from_query(base_query: str, role_synonyms_enabled: bool 
         ],
     }
 
-    # Detect matching buckets
     matched = set()
     for bucket, keys in buckets.items():
         if any(k in q for k in keys):
@@ -193,23 +180,18 @@ def build_role_variants_from_query(base_query: str, role_synonyms_enabled: bool 
         for b in matched:
             roles.extend(expansions.get(b, []))
     else:
-
         for b in matched:
-            first = expansions.get(b, [])[:1]
-            roles.extend(first)
+            roles.extend(expansions.get(b, [])[:1])
 
-    # Dedup while preserving order
     seen = set()
     out = []
     for r in roles:
         if r not in seen:
             out.append(r)
             seen.add(r)
-    return out[:40]  # keep it bounded
+    return out[:40]
 
-# ----------------------------
-# Core fan-out search
-# ----------------------------
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_many_google_results(
     base_query: str,
@@ -217,7 +199,7 @@ def get_many_google_results(
     gl: str = DEFAULT_GL,
     hl: str = DEFAULT_HL,
     location: str = DEFAULT_LOCATION,
-    tbs: str = None,           # e.g., "qdr:y" (last year) or "qdr:m" (last month)
+    tbs: str = None,
     max_pages_per_query: int = 5,
     polite_delay: float = 0.4,
     enable_site_variants: bool = True,
@@ -225,69 +207,45 @@ def get_many_google_results(
     enable_intitle_inurl_variants: bool = True,
     role_synonyms_enabled: bool = True,
 ):
-    """
-    Fan-out across multiple query variants, aggregate + dedupe by URL and host.
-    Returns: list of dicts: {query_variant, link, title, snippet}
-    """
-
     if not SERPER_API_KEY:
-        # Return early with helpful marker row; Streamlit UI will show st.error elsewhere.
         return [{"error": "Missing SERPER_API_KEY in environment."}]
 
-    # --- Build query variants ---
     geo = '(nepal OR kathmandu OR lalitpur OR bhaktapur OR pokhara OR biratnagar OR butwal)'
-
-    #  Role variants inferred from base_query (keeps your previous default if nothing matches)
     role_variants = build_role_variants_from_query(base_query, role_synonyms_enabled=role_synonyms_enabled)
-
     intent_variants = ['(cv OR resume OR portfolio)']
-
     intitle_inurl_variants = [
         'intitle:resume', 'intitle:portfolio', 'inurl:resume', 'inurl:cv'
     ] if enable_intitle_inurl_variants else []
-
     filetype_variants = [
         'filetype:pdf (resume OR cv)', 'filetype:doc OR filetype:docx "resume"'
     ] if enable_filetype_variants else []
-
     site_variants = [
         'site:github.io', 'site:wixsite.com', 'site:canva.site', 'site:notion.site',
         'site:about.me', 'site:googleusercontent.com'
     ] if enable_site_variants else []
 
-    # Start with user’s base query to respect input
     variants = [base_query.strip()]
-
-    # Structured combinations: role + intent + geo
     for role in role_variants:
         for intent in intent_variants:
             variants.append(f'{role} {intent} {geo}')
-
-    # Add intitle/inurl flavors
     for role in role_variants:
         for ii in intitle_inurl_variants:
             variants.append(f'{role} {ii} {geo}')
-
-    # Add filetype flavors
     for role in role_variants:
         for ft in filetype_variants:
             variants.append(f'{role} {ft} {geo}')
-
-    # Add site flavors (role + geo + site)
     for role in role_variants:
         for site in site_variants:
             variants.append(f'{role} {geo} {site}')
 
-    # Deduplicate textual variants & keep order
     seen_v = set()
     clean_variants = []
     for v in variants:
-        vv = " ".join(v.split())  # normalize spaces
+        vv = " ".join(v.split())
         if vv and vv not in seen_v:
             clean_variants.append(vv)
             seen_v.add(vv)
 
-    # --- Fan-out search ---
     results = []
     seen_urls, seen_hosts = set(), set()
     status = st.empty()
@@ -303,7 +261,6 @@ def get_many_google_results(
             try:
                 data = _serper_page(q, page, gl=gl, hl=hl, location=location, tbs=tbs)
             except requests.RequestException as e:
-                # If a variant fails, continue to the next
                 results.append({
                     "query_variant": q,
                     "link": None,
@@ -314,7 +271,6 @@ def get_many_google_results(
 
             organic = data.get('organic', []) or []
             if not organic:
-                # No more results for this variant
                 break
 
             page_got_new = False
@@ -323,7 +279,6 @@ def get_many_google_results(
                 if not link:
                     continue
                 host = _host(link)
-                # Dedup by exact URL and host (host-diversity for portfolios)
                 if (link in seen_urls) or (host in seen_hosts):
                     continue
 
@@ -340,7 +295,6 @@ def get_many_google_results(
                 if len(results) >= num_results:
                     break
 
-            # If nothing new on this page (likely duplicates), or the page has <10 organic items → stop paging this variant
             if not page_got_new or len(organic) < 10:
                 break
 
@@ -351,166 +305,86 @@ def get_many_google_results(
     return results[:num_results]
 
 
-st.sidebar.header("Search Controls")
-
-default_query = '("backend developer") AND (CV OR resume OR portfolio) AND Nepal'
-base_query = st.sidebar.text_area("Base query", value=default_query, height=200)
-
-num_results_to_fetch = st.sidebar.number_input("Target results", min_value=10, max_value=1000, value=100, step=10)
-
-col_loc1, col_loc2 = st.sidebar.columns(2)
-with col_loc1:
-    gl = st.text_input("gl (country)", value=DEFAULT_GL, help="Country code (e.g., np, in, us)")
-with col_loc2:
-    hl = st.text_input("hl (lang)", value=DEFAULT_HL, help="Language (e.g., en, ne)")
-
-location = st.sidebar.text_input("location", value=DEFAULT_LOCATION, help='E.g., "Kathmandu, Nepal"')
-
-tbs = st.sidebar.selectbox(
-    "Time filter (tbs)",
-    options=[None, "qdr:d", "qdr:w", "qdr:m", "qdr:y"],
-    index=0,
-    help="Optional recency filter: day/week/month/year"
-)
-
-max_pages_per_query = st.sidebar.slider("Max pages per variant", min_value=1, max_value=10, value=5)
-polite_delay = st.sidebar.slider("Delay between pages (s)", min_value=0.0, max_value=2.0, value=0.4)
-
-st.sidebar.markdown("**Variant Toggles**")
-enable_site_variants = st.sidebar.checkbox("Include site: variants", value=True)
-enable_filetype_variants = st.sidebar.checkbox("Include filetype: variants", value=True)
-enable_intitle_inurl_variants = st.sidebar.checkbox("Include intitle:/inurl:", value=True)
-role_synonyms_enabled = st.sidebar.checkbox("Include role synonyms", value=True)
-
-st.sidebar.markdown("---")
-st.sidebar.caption("Powered by Serper API • Remember to set SERPER_API_KEY in your environment.")
-
-
-run_search = st.button("Run Search", type="primary")
-
-
-if run_search:
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_google_search_results_simple(query: str, num_results_to_fetch: int = 100):
     if not SERPER_API_KEY:
-        st.error("SERPER_API_KEY not found. Create a .env with SERPER_API_KEY=your_key and restart.")
-    else:
-        with st.spinner(f"Fetching up to {num_results_to_fetch} results…"):
-            data = get_many_google_results(
-                base_query=base_query,
-                num_results=num_results_to_fetch,
-                gl=gl or None,
-                hl=hl or None,
-                location=location or None,
-                tbs=tbs,
-                max_pages_per_query=max_pages_per_query,
-                polite_delay=polite_delay,
-                enable_site_variants=enable_site_variants,
-                enable_filetype_variants=enable_filetype_variants,
-                enable_intitle_inurl_variants=enable_intitle_inurl_variants,
-                role_synonyms_enabled=role_synonyms_enabled,
+        return []
+
+    url = SERPER_URL
+    headers = SERPER_HEADERS
+
+    all_results = []
+    max_results_per_page = 10
+    num_pages = (num_results_to_fetch + max_results_per_page - 1) // max_results_per_page
+
+    status_message = st.empty()
+    for page in range(num_pages):
+        if len(all_results) >= num_results_to_fetch:
+            break
+        payload = {"q": query, "page": page + 1}
+        try:
+            status_message.info(
+                f"Fetching page {page + 1}/{num_pages} "
+                f"(collected {len(all_results)}/{num_results_to_fetch})…"
             )
-        st.session_state["search_data"] = data
+            response = requests.post(url, headers=headers, json=payload, timeout=25)
+            response.raise_for_status()
+            data = response.json()
 
+            if 'organic' in data:
+                for result in data['organic']:
+                    all_results.append({
+                        'link': result.get('link'),
+                        'title': result.get('title'),
+                        'snippet': result.get('snippet')
+                    })
 
-if "search_data" in st.session_state and st.session_state["search_data"]:
-    results = st.session_state["search_data"]
+            if 'organic' not in data or len(data.get('organic', [])) < max_results_per_page:
+                status_message.warning(
+                    f"Fewer results returned on page {page + 1}; stopping pagination."
+                )
+                break
 
-    # Filter out errors in view but keep count
-    df = pd.DataFrame(results)
-    total_found = len(df)
-    df_view = df[df["link"].notna()].copy()
+            if page < num_pages - 1 and len(all_results) < num_results_to_fetch:
+                time.sleep(0.5)
+        except requests.exceptions.RequestException as e:
+            status_message.error(f"Error calling Serper API on page {page + 1}: {e}")
+            break
 
-    st.subheader(f"Results ({len(df_view)}/{total_found} usable links)")
-    st.dataframe(df_view[["title", "link", "snippet", "query_variant"]], use_container_width=True, height=480)
+    status_message.empty()
+    return all_results[:num_results_to_fetch]
 
-    # Download all
-    st.markdown("### Download All")
-    csv_all = df_view.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label="Download CSV (All Usable)",
-        data=csv_all,
-        file_name=f"{_safe_filename_from_query(base_query)}_results.csv",
-        mime="text/csv"
-    )
-
-    st.markdown("---")
-    st.markdown("### Review & Save Selected")
-
-    # Initialize selection state
-    if "selected_items" not in st.session_state:
-        st.session_state["selected_items"] = {row["link"]: True for _, row in df_view.iterrows()}
-    else:
-        # Merge new links into state with default True
-        for _, row in df_view.iterrows():
-            if row["link"] not in st.session_state["selected_items"]:
-                st.session_state["selected_items"][row["link"]] = True
-
-    # Bulk controls
-    c1, c2, c3 = st.columns([1,1,3])
-    with c1:
-        if st.button("✅ Select All"):
-            for lk in st.session_state["selected_items"].keys():
-                st.session_state["selected_items"][lk] = True
-    with c2:
-        if st.button("❌ Deselect All"):
-            for lk in st.session_state["selected_items"].keys():
-                st.session_state["selected_items"][lk] = False
-    with c3:
-        selected_count = sum(1 for v in st.session_state["selected_items"].values() if v)
-        st.metric("Items Selected", selected_count)
-
-    st.caption("Toggle individual items below:")
-    st.divider()
-
-    selected_rows = []
-    for i, row in df_view.iterrows():
-        link = row["link"]
-        title = row.get("title") or "No Title"
-        snippet = row.get("snippet") or ""
-
-        checked = st.checkbox(f"**{i+1}. {title}**", value=st.session_state["selected_items"].get(link, True), key=f"chk_{i}")
-        st.markdown(f"*{snippet}*")
-        st.markdown(f"🔗 [{link}]({link})")
-        st.markdown(f"<sub><code>{row.get('query_variant','')}</code></sub>", unsafe_allow_html=True)
-        st.markdown("---")
-
-        st.session_state["selected_items"][link] = checked
-        if checked:
-            selected_rows.append(row)
-
-    st.markdown("#### Save Selected to a Folder")
-    folder_name = st.text_input("Folder name under ./exports/", value="my_search_exports")
-    if st.button("Save Selected as CSV"):
-        if not selected_rows:
-            st.warning("No items selected.")
-        else:
-            project_dir = _safe_project_dir()
-            export_dir = os.path.join(project_dir, "exports", folder_name)
-            os.makedirs(export_dir, exist_ok=True)
-            out_df = pd.DataFrame(selected_rows)
-            out_path = os.path.join(export_dir, f"{_safe_filename_from_query(base_query)}_selected.csv")
-            try:
-                out_df.to_csv(out_path, index=False)
-                st.success(f"Saved {len(out_df)} selected rows to:\n`{out_path}`")
-            except Exception as e:
-                st.error(f"Error saving CSV: {e}")
-
+# ----------------------------
+# Shared Export / Viewer
+# ----------------------------
+def _export_selected(selected_rows, base_query_for_name: str, folder_name: str):
+    if not selected_rows:
+        st.warning("No items selected.")
+        return
+    project_dir = _safe_project_dir()
+    export_dir = os.path.join(project_dir, "exports", folder_name)
+    os.makedirs(export_dir, exist_ok=True)
+    out_df = pd.DataFrame(selected_rows)
+    out_path = os.path.join(export_dir, f"{_safe_filename_from_query(base_query_for_name)}_selected.csv")
+    try:
+        out_df.to_csv(out_path, index=False)
+        st.success(f"Saved {len(out_df)} selected rows to:\n`{out_path}`")
+    except Exception as e:
+        st.error(f"Error saving CSV: {e}")
 
 def display_csv_viewer():
     st.markdown("## View Exported CSVs")
-
     project_dir = _safe_project_dir()
     exports_dir = os.path.join(project_dir, "exports")
 
     if os.path.isdir(exports_dir):
-        # List folders inside exports
         folders = [f for f in os.listdir(exports_dir) if os.path.isdir(os.path.join(exports_dir, f))]
         if folders:
-            selected_folder = st.selectbox("Select export folder", folders)
+            selected_folder = st.selectbox("Select export folder", folders, key="viewer_folder")
             folder_path = os.path.join(exports_dir, selected_folder)
-            # List CSV files in selected folder
             csv_files = [f for f in os.listdir(folder_path) if f.endswith(".csv")]
             if csv_files:
-                selected_csv = st.selectbox("Select CSV file", csv_files)
+                selected_csv = st.selectbox("Select CSV file", csv_files, key="viewer_csv")
                 csv_path = os.path.join(folder_path, selected_csv)
                 try:
                     df_csv = pd.read_csv(csv_path)
@@ -525,11 +399,270 @@ def display_csv_viewer():
     else:
         st.info("No exports directory found yet. Save some results first.")
 
-# Add a button to show the CSV viewer
-if st.button("View Saved Data"):
+
+st.markdown("### Mode")
+mode = st.radio(
+    "Choose a tool:",
+    options=["Simple", "Advanced"],
+    horizontal=True,
+    index=1,  # default to Advanced like your current app
+)
+
+st.divider()
+
+
+def advanced_ui():
+    st.sidebar.header("Advanced Search Controls")
+
+    default_query = '("backend developer") AND (CV OR resume OR portfolio) AND Nepal'
+    base_query = st.sidebar.text_area("Base query", value=default_query, height=200, key="adv_base_query")
+
+    num_results_to_fetch = st.sidebar.number_input(
+        "Target results", min_value=10, max_value=1000, value=100, step=10, key="adv_num_results"
+    )
+
+    col_loc1, col_loc2 = st.sidebar.columns(2)
+    with col_loc1:
+        gl = st.text_input("gl (country)", value=DEFAULT_GL, help="Country code (e.g., np, in, us)", key="adv_gl")
+    with col_loc2:
+        hl = st.text_input("hl (lang)", value=DEFAULT_HL, help="Language (e.g., en, ne)", key="adv_hl")
+
+    location = st.sidebar.text_input("location", value=DEFAULT_LOCATION, help='E.g., "Kathmandu, Nepal"', key="adv_location")
+
+    tbs = st.sidebar.selectbox(
+        "Time filter (tbs)",
+        options=[None, "qdr:d", "qdr:w", "qdr:m", "qdr:y"],
+        index=0,
+        help="Optional recency filter: day/week/month/year",
+        key="adv_tbs"
+    )
+
+    max_pages_per_query = st.sidebar.slider("Max pages per variant", min_value=1, max_value=10, value=5, key="adv_max_pages")
+    polite_delay = st.sidebar.slider("Delay between pages (s)", min_value=0.0, max_value=2.0, value=0.4, key="adv_delay")
+
+    st.sidebar.markdown("**Variant Toggles**")
+    enable_site_variants = st.sidebar.checkbox("Include site: variants", value=True, key="adv_site_variants")
+    enable_filetype_variants = st.sidebar.checkbox("Include filetype: variants", value=True, key="adv_filetype_variants")
+    enable_intitle_inurl_variants = st.sidebar.checkbox("Include intitle:/inurl:", value=True, key="adv_intitle_inurl")
+    role_synonyms_enabled = st.sidebar.checkbox("Include role synonyms", value=True, key="adv_role_syn")
+
+    st.sidebar.markdown("---")
+    st.sidebar.caption("Powered by Serper API • Remember to set SERPER_API_KEY in your environment.")
+
+    run_search = st.button("Run Advanced Search", type="primary", key="adv_run_search")
+
+    if run_search:
+        if not SERPER_API_KEY:
+            st.error("SERPER_API_KEY not found. Create a .env with SERPER_API_KEY=your_key and restart.")
+        else:
+            with st.spinner(f"Fetching up to {num_results_to_fetch} results…"):
+                data = get_many_google_results(
+                    base_query=base_query,
+                    num_results=num_results_to_fetch,
+                    gl=gl or None,
+                    hl=hl or None,
+                    location=location or None,
+                    tbs=tbs,
+                    max_pages_per_query=max_pages_per_query,
+                    polite_delay=polite_delay,
+                    enable_site_variants=enable_site_variants,
+                    enable_filetype_variants=enable_filetype_variants,
+                    enable_intitle_inurl_variants=enable_intitle_inurl_variants,
+                    role_synonyms_enabled=role_synonyms_enabled,
+                )
+            st.session_state["advanced_search_data"] = data
+            st.session_state["advanced_query_for_name"] = base_query
+
+    if "advanced_search_data" in st.session_state and st.session_state["advanced_search_data"]:
+        results = st.session_state["advanced_search_data"]
+
+        df = pd.DataFrame(results)
+        total_found = len(df)
+        df_view = df[df["link"].notna()].copy()
+
+        st.subheader(f"Results ({len(df_view)}/{total_found} usable links)")
+        st.dataframe(df_view[["title", "link", "snippet", "query_variant"]], use_container_width=True, height=480)
+
+        # Download all
+        st.markdown("### Download All")
+        csv_all = df_view.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download CSV (All Usable)",
+            data=csv_all,
+            file_name=f"{_safe_filename_from_query(st.session_state.get('advanced_query_for_name','advanced'))}_results.csv",
+            mime="text/csv",
+            key="adv_download_all"
+        )
+
+        st.markdown("---")
+        st.markdown("### Review & Save Selected")
+
+        # Initialize selection state
+        if "advanced_selected_items" not in st.session_state:
+            st.session_state["advanced_selected_items"] = {row["link"]: True for _, row in df_view.iterrows()}
+        else:
+            for _, row in df_view.iterrows():
+                if row["link"] not in st.session_state["advanced_selected_items"]:
+                    st.session_state["advanced_selected_items"][row["link"]] = True
+
+        # Bulk controls
+        c1, c2, c3 = st.columns([1,1,3])
+        with c1:
+            if st.button("✅ Select All", key="adv_select_all"):
+                for lk in st.session_state["advanced_selected_items"].keys():
+                    st.session_state["advanced_selected_items"][lk] = True
+        with c2:
+            if st.button("❌ Deselect All", key="adv_deselect_all"):
+                for lk in st.session_state["advanced_selected_items"].keys():
+                    st.session_state["advanced_selected_items"][lk] = False
+        with c3:
+            selected_count = sum(1 for v in st.session_state["advanced_selected_items"].values() if v)
+            st.metric("Items Selected", selected_count)
+
+        st.caption("Toggle individual items below:")
+        st.divider()
+
+        selected_rows = []
+        for i, row in df_view.iterrows():
+            link = row["link"]
+            title = row.get("title") or "No Title"
+            snippet = row.get("snippet") or ""
+
+            checked = st.checkbox(
+                f"**{i+1}. {title}**",
+                value=st.session_state["advanced_selected_items"].get(link, True),
+                key=f"adv_chk_{i}"
+            )
+            st.markdown(f"*{snippet}*")
+            st.markdown(f"🔗 [{link}]({link})")
+            st.markdown(f"<sub><code>{row.get('query_variant','')}</code></sub>", unsafe_allow_html=True)
+            st.markdown("---")
+
+            st.session_state["advanced_selected_items"][link] = checked
+            if checked:
+                selected_rows.append(row)
+
+        st.markdown("#### Save Selected to a Folder")
+        folder_name = st.text_input("Folder name under ./exports/", value="my_search_exports", key="adv_folder_name")
+        if st.button("Save Selected as CSV", key="adv_save_selected"):
+            _export_selected(selected_rows, st.session_state.get('advanced_query_for_name','advanced'), folder_name)
+
+
+def simple_ui():
+    st.markdown("This is the quick extractor: paginate Serper and export or review selected items.")
+
+    st.markdown("---")
+    st.header("1. Enter Search Query")
+    search_query = st.text_input("Enter your search query:", placeholder="e.g., 'best AI tools 2025'", key="simple_query")
+
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        num_results_input_str = st.text_input("Number of results to fetch (10-500):", value="100", key="simple_num_input")
+        try:
+            num_results_to_fetch = int(num_results_input_str)
+            if not (10 <= num_results_to_fetch <= 500):
+                st.warning("Please enter a number between 10 and 500.")
+                num_results_to_fetch = 100
+        except ValueError:
+            st.warning("Please enter a valid integer for number of results.")
+            num_results_to_fetch = 100
+
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("Search Google (Simple)", type="primary", key="simple_run"):
+            if not SERPER_API_KEY:
+                st.error("SERPER_API_KEY not found in .env file. Please set it up.")
+            elif search_query:
+                with st.spinner(f"Fetching up to {num_results_to_fetch} search results…"):
+                    data = get_google_search_results_simple(search_query, num_results_to_fetch)
+                    st.session_state['simple_search_data'] = data
+                    st.session_state['simple_selected_items'] = {item['link']: True for item in data if item.get('link')}
+                    st.session_state['simple_query_for_name'] = search_query
+                    if data:
+                        st.success(f"Successfully fetched {len(data)} results.")
+                    else:
+                        st.warning("No results found for your query.")
+            else:
+                st.warning("Please enter a search query before searching.")
+
+    if 'simple_search_data' in st.session_state and st.session_state['simple_search_data']:
+        data = st.session_state['simple_search_data']
+        qname = st.session_state.get('simple_query_for_name', 'simple')
+
+        st.markdown("---")
+        st.header(f"2. Results for '{qname}' ({len(data)} found)")
+
+    
+        st.subheader("Download All Found Data")
+        df_full = pd.DataFrame(data)
+        col_dl_all, _ = st.columns([2, 5])
+        with col_dl_all:
+            csv_full_file = df_full.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download All Results as CSV",
+                data=csv_full_file,
+                file_name=f"{_safe_filename_from_query(qname)}_all_results.csv",
+                mime="text/csv",
+                help="Download a CSV containing all fetched links, titles, and snippets.",
+                key="simple_download_all"
+            )
+
+        st.markdown("---")
+        st.header("3. Review and Select Specific Items to Save")
+
+        # Bulk selection form
+        with st.form("simple_bulk_selection_form"):
+            col_select_all, col_deselect_all, col_selected_count = st.columns([1, 1, 3])
+            with col_select_all:
+                if st.form_submit_button("✅ Select All", use_container_width=True):
+                    st.session_state['simple_selected_items'] = {link: True for link in st.session_state['simple_selected_items']}
+            with col_deselect_all:
+                if st.form_submit_button("❌ Deselect All", use_container_width=True):
+                    st.session_state['simple_selected_items'] = {link: False for link in st.session_state['simple_selected_items']}
+            with col_selected_count:
+                selected_count = sum(1 for v in st.session_state['simple_selected_items'].values() if v)
+                st.metric(label="Items Selected", value=selected_count)
+
+        st.markdown("Use the checkboxes below to select the items you wish to save.")
+        st.markdown("---")
+
+        selected_data_for_export = []
+        for i, item in enumerate(data):
+            link = item.get('link')
+            title = item.get('title', 'No Title')
+            snippet = item.get('snippet', 'No snippet available.')
+            if not link:
+                continue
+
+            st.session_state['simple_selected_items'][link] = st.checkbox(
+                f"**{i+1}. {title}**",
+                value=st.session_state['simple_selected_items'].get(link, True),
+                key=f"simple_checkbox_{i}_{link}"
+            )
+            st.markdown(f"*{snippet}*")
+            st.markdown(f"🔗 [{link}]({link})")
+            st.markdown("---")
+
+            if st.session_state['simple_selected_items'][link]:
+                selected_data_for_export.append(item)
+
+        st.subheader("Save Selected Items to a Folder")
+        folder_name = st.text_input("Enter folder name to save CSV (e.g., 'my_search_exports'):", key="simple_folder_name")
+        if st.button("Save Selected Items to CSV", type="secondary", key="simple_save_selected"):
+            _export_selected(selected_data_for_export, qname, folder_name or "my_search_exports")
+
+
+if mode == "Advanced":
+    advanced_ui()
+else:
+    simple_ui()
+
+
+st.markdown("---")
+if st.button("View Saved Data", key="viewer_toggle"):
     st.session_state["show_csv_viewer"] = not st.session_state.get("show_csv_viewer", False)
 
 if st.session_state.get("show_csv_viewer"):
     display_csv_viewer()
 else:
-    st.info("Enter a base query in the sidebar and click **Run Search** to begin. Click 'View Saved Data' to see your exports.")
+    st.info("Tip: Use **View Saved Data** to browse CSVs you exported earlier.")
