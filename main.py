@@ -6,6 +6,11 @@ import pandas as pd
 import streamlit as st
 from urllib.parse import urlparse
 from dotenv import load_dotenv
+import csv
+from datetime import datetime
+
+# Scraper integration
+import scrape_resume_details as scraper
 
 
 load_dotenv()
@@ -372,6 +377,53 @@ def _export_selected(selected_rows, base_query_for_name: str, folder_name: str):
     except Exception as e:
         st.error(f"Error saving CSV: {e}")
 
+def _ensure_scrape_run_dirs(base_query_for_name: str, folder_name: str):
+    """
+    Deprecated in favor of CLI-like run dirs. Kept for backward compat.
+    """
+    project_dir = _safe_project_dir()
+    export_dir = os.path.join(project_dir, "exports", folder_name or "my_search_exports")
+    os.makedirs(export_dir, exist_ok=True)
+    csv_name = f"{_safe_filename_from_query(base_query_for_name)}_scraped.csv"
+    csv_path = os.path.join(export_dir, csv_name)
+    download_dir = os.path.join(export_dir, f"{_safe_filename_from_query(base_query_for_name)}_downloads")
+    os.makedirs(download_dir, exist_ok=True)
+    return csv_path, download_dir
+
+def _append_scraped_rows(csv_path: str, rows: list):
+    """Append scraped rows to a CSV, creating it with header if needed."""
+    if not rows:
+        return
+    fieldnames = ["original_url", "base_url", "name", "email", "phone", "cv_url"]
+    file_exists = os.path.exists(csv_path)
+    try:
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k) or "" for k in fieldnames})
+    except Exception as e:
+        st.error(f"Error appending to CSV: {e}")
+
+def _init_scrape_run_like_cli(base_query_for_name: str):
+    """Mirror CLI workflow: ./scraped/scraped_run_<timestamp>/scraped_data_<date>.csv and downloaded_cvs."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    date_only = timestamp.split("_")[0]
+    base_dir = scraper.BASE_EXPORTS_DIR
+    os.makedirs(base_dir, exist_ok=True)
+    run_dir = os.path.join(base_dir, f"scraped_run_{timestamp}")
+    os.makedirs(run_dir, exist_ok=True)
+    csv_path = os.path.join(run_dir, f"scraped_data_{date_only}.csv")
+    download_dir = os.path.join(run_dir, "downloaded_cvs")
+    os.makedirs(download_dir, exist_ok=True)
+    scraper.CURRENT_RUN_DIR = run_dir
+    scraper.CURRENT_DOWNLOAD_DIR = download_dir
+    st.session_state["adv_scrape_run_dir"] = run_dir
+    st.session_state["adv_scrape_download_dir"] = download_dir
+    st.session_state["adv_scrape_csv_path"] = csv_path
+    return csv_path, download_dir
+
 def display_csv_viewer():
     st.markdown("## View Exported CSVs")
     project_dir = _safe_project_dir()
@@ -408,7 +460,7 @@ mode = st.radio(
     index=1,  # default to Advanced like your current app
 )
 
-st.divider()
+# st.divider()
 
 
 def advanced_ui():
@@ -418,7 +470,7 @@ def advanced_ui():
     base_query = st.sidebar.text_area("Base query", value=default_query, height=200, key="adv_base_query")
 
     num_results_to_fetch = st.sidebar.number_input(
-        "Target results", min_value=10, max_value=1000, value=100, step=10, key="adv_num_results"
+        "Target results", min_value=10, max_value=1000, value=10, step=10, key="adv_num_results"
     )
 
     col_loc1, col_loc2 = st.sidebar.columns(2)
@@ -472,6 +524,9 @@ def advanced_ui():
                 )
             st.session_state["advanced_search_data"] = data
             st.session_state["advanced_query_for_name"] = base_query
+            # reset scraped cache for a fresh run
+            st.session_state["advanced_scraped_results"] = {}
+            st.session_state["advanced_scraped_accumulator"] = []
 
     if "advanced_search_data" in st.session_state and st.session_state["advanced_search_data"]:
         results = st.session_state["advanced_search_data"]
@@ -487,12 +542,19 @@ def advanced_ui():
         st.markdown("### Download All")
         csv_all = df_view.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="Download CSV (All Usable)",
+            label="Download CSV (ALL without Filter)",
             data=csv_all,
             file_name=f"{_safe_filename_from_query(st.session_state.get('advanced_query_for_name','advanced'))}_results.csv",
             mime="text/csv",
             key="adv_download_all"
         )
+
+        # --- Save Selected to a Folder ---
+        st.markdown("#### Save Selected to a Folder")
+        st.info("This is for developer use only")
+        folder_name = st.text_input("Folder name under ./exports/", value="my_search_exports", key="adv_folder_name")
+        if st.button("Save Selected as CSV", key="adv_save_selected"):
+            _export_selected(selected_rows, st.session_state.get('advanced_query_for_name','advanced'), folder_name)
 
         st.markdown("---")
         st.markdown("### Review & Save Selected")
@@ -522,12 +584,52 @@ def advanced_ui():
         st.caption("Toggle individual items below:")
         st.divider()
 
+        # Initialize CLI-like scrape run directory once
+        if "adv_scrape_csv_path" not in st.session_state:
+            _init_scrape_run_like_cli(st.session_state.get('advanced_query_for_name','advanced'))
+        csv_path = st.session_state.get("adv_scrape_csv_path")
+        download_dir = st.session_state.get("adv_scrape_download_dir")
+        if download_dir:
+            scraper.CURRENT_DOWNLOAD_DIR = download_dir
+
+        if "advanced_scraped_results" not in st.session_state:
+            st.session_state["advanced_scraped_results"] = {}
+
+        # Scrape All Selected
+        if st.button("🧹 Scrape All Selected", key="adv_scrape_all"):
+            selectable_links = [row["link"] for _, row in df_view.iterrows() if st.session_state["advanced_selected_items"].get(row["link"], False)]
+            if not selectable_links:
+                st.warning("No items selected to scrape.")
+            else:
+                prog = st.progress(0)
+                done = 0
+                total = len(selectable_links)
+                with st.spinner("Scraping selected items…"):
+                    batch_rows = []
+                    for lk in selectable_links:
+                        try:
+                            res = scraper.process_single_url(lk)
+                            st.session_state["advanced_scraped_results"][lk] = {"data": res, "error": None}
+                            if res:
+                                batch_rows.append(res)
+                        except Exception as e:
+                            st.session_state["advanced_scraped_results"][lk] = {"data": None, "error": str(e)}
+                        done += 1
+                        prog.progress(min(done/total, 1.0))
+                if batch_rows:
+                    # accumulate instead of writing immediately
+                    if "advanced_scraped_accumulator" not in st.session_state:
+                        st.session_state["advanced_scraped_accumulator"] = []
+                    st.session_state["advanced_scraped_accumulator"].extend(batch_rows)
+                    st.success(f"Added {len(batch_rows)} rows to your scraped list (not yet saved).")
+
         selected_rows = []
         for i, row in df_view.iterrows():
             link = row["link"]
             title = row.get("title") or "No Title"
             snippet = row.get("snippet") or ""
 
+            # Simple list row UI
             checked = st.checkbox(
                 f"**{i+1}. {title}**",
                 value=st.session_state["advanced_selected_items"].get(link, True),
@@ -536,17 +638,63 @@ def advanced_ui():
             st.markdown(f"*{snippet}*")
             st.markdown(f"🔗 [{link}]({link})")
             st.markdown(f"<sub><code>{row.get('query_variant','')}</code></sub>", unsafe_allow_html=True)
-            st.markdown("---")
 
             st.session_state["advanced_selected_items"][link] = checked
             if checked:
                 selected_rows.append(row)
 
-        st.markdown("#### Save Selected to a Folder")
-        folder_name = st.text_input("Folder name under ./exports/", value="my_search_exports", key="adv_folder_name")
-        if st.button("Save Selected as CSV", key="adv_save_selected"):
-            _export_selected(selected_rows, st.session_state.get('advanced_query_for_name','advanced'), folder_name)
+            cols = st.columns([1,1,3])
+            with cols[0]:
+                if st.button("Scrape", key=f"adv_scrape_{i}"):
+                    with st.spinner("Scraping…"):
+                        try:
+                            res = scraper.process_single_url(link)
+                            st.session_state["advanced_scraped_results"][link] = {"data": res, "error": None}
+                        except Exception as e:
+                            st.session_state["advanced_scraped_results"][link] = {"data": None, "error": str(e)}
+            with cols[1]:
+                has_data = bool(st.session_state["advanced_scraped_results"].get(link, {}).get("data"))
+                if has_data:
+                    if st.button("Add to List", key=f"adv_addcsv_{i}"):
+                        if "advanced_scraped_accumulator" not in st.session_state:
+                            st.session_state["advanced_scraped_accumulator"] = []
+                        st.session_state["advanced_scraped_accumulator"].append(st.session_state["advanced_scraped_results"][link]["data"])
+                        st.success("Added to your scraped list.")
+            # Show scraped result or error
+            res_state = st.session_state["advanced_scraped_results"].get(link)
+            if res_state:
+                data = res_state.get("data")
+                err = res_state.get("error")
+                if err:
+                    st.error(f"Scrape error: {err}")
+                elif data:
+                    name = data.get("name") or "-"
+                    email = data.get("email") or "-"
+                    phone = data.get("phone") or "-"
+                    cv_url = data.get("cv_url") or "-"
+                    st.markdown(f"Name: **{name}**  |  Email: **{email}**  |  Phone: **{phone}**")
+                    if cv_url and cv_url != "-":
+                        st.markdown(f"CV: [{cv_url}]({cv_url})")
+            st.markdown("---")
+  # Scraped data accumulator download
+        basket = st.session_state.get("advanced_scraped_accumulator", [])
+        st.subheader("Scraped Data Basket")
+        st.caption(f"Items in basket: {len(basket)}")
+        if basket:
+            df_basket = pd.DataFrame(basket)
+            csv_bytes = df_basket.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download Scraped Data as CSV",
+                data=csv_bytes,
+                file_name=f"{_safe_filename_from_query(st.session_state.get('advanced_query_for_name','advanced'))}_scraped_download.csv",
+                mime="text/csv",
+                key="adv_download_scraped"
+            )
 
+
+       
+
+      
 
 def simple_ui():
     st.markdown("This is the quick extractor: paginate Serper and export or review selected items.")
