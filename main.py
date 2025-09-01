@@ -22,9 +22,10 @@ DEFAULT_HL = "en"
 DEFAULT_LOCATION = "Kathmandu, Nepal"
 
 
-st.set_page_config(layout="wide", page_title="Google Talent Sourcing (Simple & Advanced)")
+st.set_page_config(layout="wide", page_title="No Bull Code Talent Sourcing (Simple & Advanced)")
 
-st.title("🔎 Google Talent Sourcing (Serper)")
+st.title("🔎 No Bull Code Talent Sourcing")
+
 st.caption("Switch between a simple extractor and an advanced, role-aware fan-out search. Export results and review selections with ease.")
 
 
@@ -391,7 +392,7 @@ def _append_scraped_rows(csv_path: str, rows: list):
     """Append scraped rows to a CSV, creating it with header if needed."""
     if not rows:
         return
-    fieldnames = ["original_url", "base_url", "name", "email", "phone", "cv_url"]
+    fieldnames = ["original_url", "base_url", "name", "emails", "phones", "masked_phones", "cv_url", "pages_crawled", "crawled_urls", "all_emails", "all_phones", "all_masked_phones"]
     file_exists = os.path.exists(csv_path)
     try:
         with open(csv_path, "a", newline="", encoding="utf-8") as f:
@@ -399,7 +400,14 @@ def _append_scraped_rows(csv_path: str, rows: list):
             if not file_exists:
                 w.writeheader()
             for r in rows:
-                w.writerow({k: r.get(k) or "" for k in fieldnames})
+                # Convert lists to strings for CSV
+                row_data = {}
+                for k in fieldnames:
+                    if k in ["emails", "phones", "masked_phones", "crawled_urls"]:
+                        row_data[k] = "; ".join(r.get(k, []))
+                    else:
+                        row_data[k] = r.get(k) or ""
+                w.writerow(row_data)
     except Exception as e:
         st.error(f"Error appending to CSV: {e}")
 
@@ -495,6 +503,11 @@ def advanced_ui():
     enable_intitle_inurl_variants = st.sidebar.checkbox("Include intitle:/inurl:", value=True, key="adv_intitle_inurl")
     role_synonyms_enabled = st.sidebar.checkbox("Include role synonyms", value=True, key="adv_role_syn")
 
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Scraping Settings**")
+    crawl_depth = st.sidebar.slider("Crawl Depth", min_value=1, max_value=15, value=10, 
+                                   help="How deep to crawl websites (higher = more thorough but slower)")
+    
     st.sidebar.markdown("---")
     st.sidebar.caption("Powered by Serper API • Remember to set SERPER_API_KEY in your environment.")
 
@@ -601,7 +614,7 @@ def advanced_ui():
                     batch_rows = []
                     for lk in selectable_links:
                         try:
-                            res = scraper.process_single_url(lk)
+                            res = scraper.process_single_url(lk, max_depth=crawl_depth)
                             st.session_state["advanced_scraped_results"][lk] = {"data": res, "error": None}
                             if res:
                                 batch_rows.append(res)
@@ -635,7 +648,7 @@ def advanced_ui():
                 key=f"adv_chk_{i}"
             )
             st.markdown(f"*{snippet}*")
-            st.markdown(f"🔗 [{link}]({link})")
+            st.markdown(f"[{link}]({link})")
             st.markdown(f"<sub><code>{row.get('query_variant','')}</code></sub>", unsafe_allow_html=True)
 
             st.session_state["advanced_selected_items"][link] = checked
@@ -648,7 +661,7 @@ def advanced_ui():
                 if st.button("Scrape", key=f"adv_scrape_{i}", type="primary"):
                     with st.spinner("Scraping…"):
                         try:
-                            res = scraper.process_single_url(link)
+                            res = scraper.process_single_url(link, max_depth=crawl_depth)
                             st.session_state["advanced_scraped_results"][link] = {"data": res, "error": None}
                         except Exception as e:
                             st.session_state["advanced_scraped_results"][link] = {"data": None, "error": str(e)}
@@ -671,16 +684,390 @@ def advanced_ui():
                     st.error(f"❌ Scrape error: {err}")
                 elif data:
                     name = data.get("name") or "-"
-                    email = data.get("email") or "-"
-                    phone = data.get("phone") or "-"
+                    emails = data.get("emails", [])
+                    phones = data.get("phones", [])
+                    masked_phones = data.get("masked_phones", [])
                     cv_url = data.get("cv_url") or "-"
+                    pages_crawled = data.get("pages_crawled", 0)
+                    crawled_urls = data.get("crawled_urls", [])
                     
                     # Display in a nice format
                     st.markdown("**Scraped Data:**")
-                    col_name, col_email, col_phone = st.columns(3)
+                    col_name, col_pages = st.columns([2, 1])
                     col_name.write(f"**Name:** {name}")
-                    col_email.write(f"**Email:** {email}")
-                    col_phone.write(f"**Phone:** {phone}")
+                    col_pages.write(f"**Pages Crawled:** {pages_crawled}")
+                    
+                    # Replace expander with a regular button for name editing
+                    if "edit_name_active_{link}" not in st.session_state:
+                        st.session_state[f"edit_name_active_{link}"] = False
+                        
+                    if st.button("✏️ Edit Name", key=f"toggle_edit_name_{link}"):
+                        st.session_state[f"edit_name_active_{link}"] = not st.session_state[f"edit_name_active_{link}"]
+                        
+                    if st.session_state[f"edit_name_active_{link}"]:
+                        manual_name = st.text_input("Enter/edit name:", value=name if name and name != "-" else "", key=f"manual_name_{link}")
+                        if st.button("Update Name in Basket", key=f"update_manual_name_{link}"):
+                            if manual_name and len(manual_name.strip()) > 0:
+                                if "advanced_scraped_accumulator" not in st.session_state:
+                                    st.session_state["advanced_scraped_accumulator"] = []
+                                
+                                # Check if an entry with this URL already exists in the basket
+                                original_url = data.get("original_url", "")
+                                existing_entry_index = None
+                                for idx, entry in enumerate(st.session_state["advanced_scraped_accumulator"]):
+                                    if entry.get("original_url") == original_url:
+                                        existing_entry_index = idx
+                                        break
+                                
+                                if existing_entry_index is not None:
+                                    # Update existing entry with the name
+                                    existing_entry = st.session_state["advanced_scraped_accumulator"][existing_entry_index]
+                                    existing_entry["name"] = manual_name.strip()
+                                    st.session_state["advanced_scraped_accumulator"][existing_entry_index] = existing_entry
+                                else:
+                                    # Create a new entry
+                                    new_entry = {
+                                        "original_url": original_url,
+                                        "base_url": data.get("base_url", ""),
+                                        "name": manual_name.strip(),
+                                        "emails": [],
+                                        "phones": [],
+                                        "masked_phones": [],
+                                        "cv_url": data.get("cv_url", ""),
+                                        "pages_crawled": data.get("pages_crawled", 0),
+                                        "all_emails": "",
+                                        "all_phones": "",
+                                        "all_masked_phones": ""
+                                    }
+                                    st.session_state["advanced_scraped_accumulator"].append(new_entry)
+                                st.success(f"✅ Added/updated name to: {manual_name}")
+                                # Close the editor after success
+                                st.session_state[f"edit_name_active_{link}"] = False
+                                st.rerun()
+                            else:
+                                st.error("Please enter a valid name")
+                    
+                    # Display crawled URLs (collapsed by default)
+                    if crawled_urls:
+                        with st.expander("📋 Crawled URLs", expanded=False):
+                            for i, url in enumerate(crawled_urls, 1):
+                                st.markdown(f"  {i}. [{url}]({url})")
+                    
+                    # Display emails with individual add buttons
+                    if emails:
+                        st.markdown("**Emails:**")
+                        for i, email in enumerate(emails, 1):
+                            col_email, col_add_email = st.columns([3, 1])
+                            with col_email:
+                                st.markdown(f"  {i}. {email}")
+                            with col_add_email:
+                                if st.button("➕", key=f"add_email_{i}_{link}", help=f"Add {email} to basket"):
+                                    if "advanced_scraped_accumulator" not in st.session_state:
+                                        st.session_state["advanced_scraped_accumulator"] = []
+                                    
+                                    # Check if an entry with this URL already exists in the basket
+                                    original_url = data.get("original_url", "")
+                                    existing_entry_index = None
+                                    for idx, entry in enumerate(st.session_state["advanced_scraped_accumulator"]):
+                                        if entry.get("original_url") == original_url:
+                                            existing_entry_index = idx
+                                            break
+                                    
+                                    if existing_entry_index is not None:
+                                        # Update existing entry
+                                        existing_entry = st.session_state["advanced_scraped_accumulator"][existing_entry_index]
+                                        if email not in existing_entry.get("emails", []):
+                                            existing_entry.setdefault("emails", []).append(email)
+                                            existing_entry["all_emails"] = "; ".join(existing_entry["emails"])
+                                        st.session_state["advanced_scraped_accumulator"][existing_entry_index] = existing_entry
+                                    else:
+                                        # Create a new entry
+                                        new_entry = {
+                                            "original_url": original_url,
+                                            "base_url": data.get("base_url", ""),
+                                            "name": data.get("name", ""),
+                                            "emails": [email],
+                                            "phones": [],
+                                            "masked_phones": [],
+                                            "cv_url": data.get("cv_url", ""),
+                                            "pages_crawled": data.get("pages_crawled", 0),
+                                            "all_emails": email,
+                                            "all_phones": "",
+                                            "all_masked_phones": ""
+                                        }
+                                        st.session_state["advanced_scraped_accumulator"].append(new_entry)
+                                    st.success(f"✅ Added {email} to basket!")
+                    else:
+                        st.markdown("**Emails:** None found")
+                    
+                    # Add manual email input - show regardless if emails were found or not
+                    # Replace expander with a regular button for manual email
+                    if f"add_email_active_{link}" not in st.session_state:
+                        st.session_state[f"add_email_active_{link}"] = False
+                        
+                    # Initialize manually added emails for display
+                    if f"manual_emails_{link}" not in st.session_state:
+                        st.session_state[f"manual_emails_{link}"] = []
+                        
+                        # Check if there are already emails for this URL in the basket
+                        original_url = data.get("original_url", "")
+                        for entry in st.session_state.get("advanced_scraped_accumulator", []):
+                            if entry.get("original_url") == original_url and entry.get("emails"):
+                                st.session_state[f"manual_emails_{link}"] = entry.get("emails", [])
+                                break
+                    
+                    # Display any manually added emails
+                    if st.session_state[f"manual_emails_{link}"]:
+                        st.markdown("**Manually Added Emails:**")
+                        for i, email in enumerate(st.session_state[f"manual_emails_{link}"], 1):
+                            st.markdown(f"  {i}. {email}")
+                    
+                    if st.button("➕ Add Email Manually", key=f"toggle_add_email_{link}"):
+                        st.session_state[f"add_email_active_{link}"] = not st.session_state[f"add_email_active_{link}"]
+                        
+                    if st.session_state[f"add_email_active_{link}"]:
+                        manual_email = st.text_input("Enter email address:", key=f"manual_email_{link}")
+                        if st.button("Add Email to Basket", key=f"add_manual_email_{link}"):
+                            if manual_email and '@' in manual_email:
+                                if "advanced_scraped_accumulator" not in st.session_state:
+                                    st.session_state["advanced_scraped_accumulator"] = []
+                                
+                                # Check if an entry with this URL already exists in the basket
+                                original_url = data.get("original_url", "")
+                                existing_entry_index = None
+                                for idx, entry in enumerate(st.session_state["advanced_scraped_accumulator"]):
+                                    if entry.get("original_url") == original_url:
+                                        existing_entry_index = idx
+                                        break
+                                
+                                if existing_entry_index is not None:
+                                    # Update existing entry
+                                    existing_entry = st.session_state["advanced_scraped_accumulator"][existing_entry_index]
+                                    if manual_email not in existing_entry.get("emails", []):
+                                        existing_entry.setdefault("emails", []).append(manual_email)
+                                        existing_entry["all_emails"] = "; ".join(existing_entry["emails"])
+                                    st.session_state["advanced_scraped_accumulator"][existing_entry_index] = existing_entry
+                                else:
+                                    # Create a new entry
+                                    new_entry = {
+                                        "original_url": original_url,
+                                        "base_url": data.get("base_url", ""),
+                                        "name": data.get("name", ""),
+                                        "emails": [manual_email],
+                                        "phones": [],
+                                        "masked_phones": [],
+                                        "cv_url": data.get("cv_url", ""),
+                                        "pages_crawled": data.get("pages_crawled", 0),
+                                        "all_emails": manual_email,
+                                        "all_phones": "",
+                                        "all_masked_phones": ""
+                                    }
+                                    st.session_state["advanced_scraped_accumulator"].append(new_entry)
+                                    
+                                # Update the displayed emails list
+                                if manual_email not in st.session_state[f"manual_emails_{link}"]:
+                                    st.session_state[f"manual_emails_{link}"].append(manual_email)
+                                    
+                                st.success(f"✅ Added {manual_email} to basket!")
+                                # Close the editor after success
+                                st.session_state[f"add_email_active_{link}"] = False
+                                st.rerun()
+                            else:
+                                st.error("Please enter a valid email address")
+                    
+                    # Display phones with individual add buttons
+                    if phones:
+                        st.markdown("**Phone Numbers:**")
+                        for i, phone in enumerate(phones, 1):
+                            col_phone, col_add_phone = st.columns([3, 1])
+                            with col_phone:
+                                st.markdown(f"  {i}. {phone}")
+                            with col_add_phone:
+                                if st.button("➕", key=f"add_phone_{i}_{link}", help=f"Add {phone} to basket"):
+                                    if "advanced_scraped_accumulator" not in st.session_state:
+                                        st.session_state["advanced_scraped_accumulator"] = []
+                                    
+                                    # Check if an entry with this URL already exists in the basket
+                                    original_url = data.get("original_url", "")
+                                    existing_entry_index = None
+                                    for idx, entry in enumerate(st.session_state["advanced_scraped_accumulator"]):
+                                        if entry.get("original_url") == original_url:
+                                            existing_entry_index = idx
+                                            break
+                                    
+                                    if existing_entry_index is not None:
+                                        # Update existing entry
+                                        existing_entry = st.session_state["advanced_scraped_accumulator"][existing_entry_index]
+                                        if phone not in existing_entry.get("phones", []):
+                                            existing_entry.setdefault("phones", []).append(phone)
+                                            existing_entry["all_phones"] = "; ".join(existing_entry["phones"])
+                                        st.session_state["advanced_scraped_accumulator"][existing_entry_index] = existing_entry
+                                    else:
+                                        # Create a new entry
+                                        new_entry = {
+                                            "original_url": original_url,
+                                            "base_url": data.get("base_url", ""),
+                                            "name": data.get("name", ""),
+                                            "emails": [],
+                                            "phones": [phone],
+                                            "masked_phones": [],
+                                            "cv_url": data.get("cv_url", ""),
+                                            "pages_crawled": data.get("pages_crawled", 0),
+                                            "all_emails": "",
+                                            "all_phones": phone,
+                                            "all_masked_phones": ""
+                                        }
+                                        st.session_state["advanced_scraped_accumulator"].append(new_entry)
+                                    st.success(f"✅ Added {phone} to basket!")
+                    else:
+                        st.markdown("**Phone Numbers:** None found")
+                    
+                    # Add manual phone input - show regardless if phones were found or not
+                    # Replace expander with a regular button for manual phone
+                    if f"add_phone_active_{link}" not in st.session_state:
+                        st.session_state[f"add_phone_active_{link}"] = False
+                    
+                    # Initialize manually added phones for display
+                    if f"manual_phones_{link}" not in st.session_state:
+                        st.session_state[f"manual_phones_{link}"] = []
+                        
+                        # Check if there are already phones for this URL in the basket
+                        original_url = data.get("original_url", "")
+                        for entry in st.session_state.get("advanced_scraped_accumulator", []):
+                            if entry.get("original_url") == original_url and entry.get("phones"):
+                                st.session_state[f"manual_phones_{link}"] = entry.get("phones", [])
+                                break
+                    
+                    # Display any manually added phones
+                    if st.session_state[f"manual_phones_{link}"]:
+                        st.markdown("**Manually Added Phone Numbers:**")
+                        for i, phone in enumerate(st.session_state[f"manual_phones_{link}"], 1):
+                            st.markdown(f"  {i}. {phone}")
+                        
+                    if st.button("➕ Add Phone Number Manually", key=f"toggle_add_phone_{link}"):
+                        st.session_state[f"add_phone_active_{link}"] = not st.session_state[f"add_phone_active_{link}"]
+                        
+                    if st.session_state[f"add_phone_active_{link}"]:
+                        manual_phone = st.text_input("Enter phone number:", key=f"manual_phone_{link}")
+                        if st.button("Add Phone to Basket", key=f"add_manual_phone_{link}"):
+                            if manual_phone and len(manual_phone) >= 10:
+                                if "advanced_scraped_accumulator" not in st.session_state:
+                                    st.session_state["advanced_scraped_accumulator"] = []
+                                
+                                # Check if an entry with this URL already exists in the basket
+                                original_url = data.get("original_url", "")
+                                existing_entry_index = None
+                                for idx, entry in enumerate(st.session_state["advanced_scraped_accumulator"]):
+                                    if entry.get("original_url") == original_url:
+                                        existing_entry_index = idx
+                                        break
+                                
+                                if existing_entry_index is not None:
+                                    # Update existing entry
+                                    existing_entry = st.session_state["advanced_scraped_accumulator"][existing_entry_index]
+                                    if manual_phone not in existing_entry.get("phones", []):
+                                        existing_entry.setdefault("phones", []).append(manual_phone)
+                                        existing_entry["all_phones"] = "; ".join(existing_entry["phones"])
+                                    st.session_state["advanced_scraped_accumulator"][existing_entry_index] = existing_entry
+                                else:
+                                    # Create a new entry
+                                    new_entry = {
+                                        "original_url": original_url,
+                                        "base_url": data.get("base_url", ""),
+                                        "name": data.get("name", ""),
+                                        "emails": [],
+                                        "phones": [manual_phone],
+                                        "masked_phones": [],
+                                        "cv_url": data.get("cv_url", ""),
+                                        "pages_crawled": data.get("pages_crawled", 0),
+                                        "all_emails": "",
+                                        "all_phones": manual_phone,
+                                        "all_masked_phones": ""
+                                    }
+                                    st.session_state["advanced_scraped_accumulator"].append(new_entry)
+                                
+                                # Update the displayed phones list
+                                if manual_phone not in st.session_state[f"manual_phones_{link}"]:
+                                    st.session_state[f"manual_phones_{link}"].append(manual_phone)
+                                    
+                                st.success(f"✅ Added {manual_phone} to basket!")
+                                # Close the editor after success
+                                st.session_state[f"add_phone_active_{link}"] = False
+                                st.rerun()
+                            else:
+                                st.error("Please enter a valid phone number")
+                    
+                    # Display masked phones with individual add buttons
+                    if masked_phones:
+                        st.markdown("**Masked Phone Numbers (Privacy Protected):**")
+                        for i, phone in enumerate(masked_phones, 1):
+                            col_masked_phone, col_add_masked_phone = st.columns([3, 1])
+                            with col_masked_phone:
+                                st.markdown(f"  {i}. {phone}")
+                            with col_add_masked_phone:
+                                if st.button("➕", key=f"add_masked_phone_{i}_{link}", help=f"Add {phone} to basket"):
+                                    if "advanced_scraped_accumulator" not in st.session_state:
+                                        st.session_state["advanced_scraped_accumulator"] = []
+                                    
+                                    # Check if an entry with this URL already exists in the basket
+                                    original_url = data.get("original_url", "")
+                                    existing_entry_index = None
+                                    for idx, entry in enumerate(st.session_state["advanced_scraped_accumulator"]):
+                                        if entry.get("original_url") == original_url:
+                                            existing_entry_index = idx
+                                            break
+                                    
+                                    if existing_entry_index is not None:
+                                        # Update existing entry
+                                        existing_entry = st.session_state["advanced_scraped_accumulator"][existing_entry_index]
+                                        if phone not in existing_entry.get("masked_phones", []):
+                                            existing_entry.setdefault("masked_phones", []).append(phone)
+                                            existing_entry["all_masked_phones"] = "; ".join(existing_entry["masked_phones"])
+                                        st.session_state["advanced_scraped_accumulator"][existing_entry_index] = existing_entry
+                                    else:
+                                        # Create a new entry
+                                        new_entry = {
+                                            "original_url": original_url,
+                                            "base_url": data.get("base_url", ""),
+                                            "name": data.get("name", ""),
+                                            "emails": [],
+                                            "phones": [],
+                                            "masked_phones": [phone],
+                                            "cv_url": data.get("cv_url", ""),
+                                            "pages_crawled": data.get("pages_crawled", 0),
+                                            "all_emails": "",
+                                            "all_phones": "",
+                                            "all_masked_phones": phone
+                                        }
+                                        st.session_state["advanced_scraped_accumulator"].append(new_entry)
+                                    st.success(f"✅ Added {phone} to basket!")
+                    else:
+                        st.markdown("**Masked Phone Numbers:** None found")
+                    
+                    # Add "Add All to Basket" button if any contacts found
+                    total_contacts = len(emails) + len(phones) + len(masked_phones)
+                    # if total_contacts > 0:
+                    #     st.markdown("---")
+                    #     if st.button("📥 Add All Contacts to Basket", key=f"add_all_{link}", type="primary"):
+                    #         if "advanced_scraped_accumulator" not in st.session_state:
+                    #             st.session_state["advanced_scraped_accumulator"] = []
+                            
+                    #         # Create a comprehensive entry with all contacts
+                    #         new_entry = {
+                    #             "original_url": data.get("original_url", ""),
+                    #             "base_url": data.get("base_url", ""),
+                    #             "name": data.get("name", ""),
+                    #             "emails": emails,
+                    #             "phones": phones,
+                    #             "masked_phones": masked_phones,
+                    #             "cv_url": data.get("cv_url", ""),
+                    #             "pages_crawled": data.get("pages_crawled", 0),
+                    #             "all_emails": "; ".join(emails),
+                    #             "all_phones": "; ".join(phones),
+                    #             "all_masked_phones": "; ".join(masked_phones)
+                    #         }
+                    #         st.session_state["advanced_scraped_accumulator"].append(new_entry)
+                    #         st.success(f"✅ Added all {total_contacts} contacts to basket!")
                     
                     if cv_url and cv_url != "-":
                         col_cv, col_dl = st.columns([2,1])
@@ -707,7 +1094,7 @@ def advanced_ui():
 
             st.markdown("---")
    
-        st.markdown("### 💾 Data Export & Download")
+        st.markdown("### Data Export & Download")
 
         # Scraped data basket
         basket = st.session_state.get("advanced_scraped_accumulator", [])
@@ -718,8 +1105,13 @@ def advanced_ui():
             # Show basket summary
             df_basket = pd.DataFrame(basket)
             st.markdown("**Basket Contents (Editable):**")
+            
+            # Prepare display columns - show all_emails and all_phones for better readability
+            display_columns = ["name", "all_emails", "all_phones", "cv_url"]
+            available_columns = [col for col in display_columns if col in df_basket.columns]
+            
             edited_df = st.data_editor(
-                df_basket[["name", "email", "phone", "cv_url"]],
+                df_basket[available_columns],
                 use_container_width=True,
                 height=500,
                 num_rows="dynamic",
@@ -729,7 +1121,7 @@ def advanced_ui():
             # Download button uses edited_df
             csv_bytes = edited_df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="📥 Download Scraped Data as CSV",
+                label="Download Scraped Data as CSV",
                 data=csv_bytes,
                 file_name=f"{_safe_filename_from_query(st.session_state.get('advanced_query_for_name','advanced'))}_scraped_data.csv",
                 mime="text/csv",
@@ -844,7 +1236,7 @@ def simple_ui():
                 key=f"simple_checkbox_{i}_{link}"
             )
             st.markdown(f"*{snippet}*")
-            st.markdown(f"🔗 [{link}]({link})")
+            st.markdown(f"[{link}]({link})")
             st.markdown("---")
 
             if st.session_state['simple_selected_items'][link]:
@@ -869,4 +1261,5 @@ if st.button("View Saved Data", key="viewer_toggle"):
 if st.session_state.get("show_csv_viewer"):
     display_csv_viewer()
 else:
+    st.info("Tip: Use **View Saved Data** to browse CSVs you exported earlier.")
     st.info("Tip: Use **View Saved Data** to browse CSVs you exported earlier.")
