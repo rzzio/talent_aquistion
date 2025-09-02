@@ -22,11 +22,31 @@ DEFAULT_HL = "en"
 DEFAULT_LOCATION = "Kathmandu, Nepal"
 
 
-st.set_page_config(layout="wide", page_title="No Bull Code Talent Sourcing (Simple & Advanced)")
+# Define _safe_project_dir first, before it's used
+def _safe_project_dir() -> str:
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        return os.getcwd()
 
-st.title("🔎 No Bull Code Talent Sourcing")
+# Now use it to set the favicon path
+favicon_path = os.path.join(_safe_project_dir(), "nobullcode_favicon.png")
 
-st.caption("Switch between a simple extractor and an advanced, role-aware fan-out search. Export results and review selections with ease.")
+# Set page config with favicon
+st.set_page_config(
+    layout="wide", 
+    page_title="No Bull Code Talent Sourcing", 
+    page_icon=favicon_path if os.path.exists(favicon_path) else "🔍"
+)
+
+# Improved header with better spacing
+st.markdown("## ")  # Add a bit of spacing at the top
+cols = st.columns([0.3, 4])
+with cols[0]:
+    st.image(os.path.join(_safe_project_dir(), "nobullcode_favicon.png"), width=80)
+with cols[1]:
+    st.title("No Bull Code Talent Sourcing")
+    st.caption("Switch between a simple extractor and an advanced, role-aware fan-out search. Export results and review selections with ease.")
 
 
 def _host(u: str) -> str:
@@ -34,12 +54,6 @@ def _host(u: str) -> str:
         return urlparse(u).netloc.lower()
     except Exception:
         return ""
-
-def _safe_project_dir() -> str:
-    try:
-        return os.path.dirname(os.path.abspath(__file__))
-    except NameError:
-        return os.getcwd()
 
 def _safe_filename_from_query(q: str) -> str:
     return "".join([c if c.isalnum() or c in (" ", "_", "-") else "" for c in q]).strip().replace(" ", "_").lower()
