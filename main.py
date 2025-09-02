@@ -1197,7 +1197,7 @@ def simple_ui():
         qname = st.session_state.get('simple_query_for_name', 'simple')
 
         st.markdown("---")
-        st.header(f"2. Results for '{qname}' ({len(data)} found)")
+        st.markdown(f"**2. Results for '{qname}' ({len(data)} found)**")
 
     
         st.subheader("Download All Found Data")
@@ -1253,7 +1253,31 @@ def simple_ui():
             if st.session_state['simple_selected_items'][link]:
                 selected_data_for_export.append(item)
 
-        st.subheader("Save Selected Items to a Folder")
+        # Display selected items in a dataframe
+        if selected_data_for_export:
+            st.header("4. Selected Items Preview")
+            df_selected = pd.DataFrame(selected_data_for_export)
+            
+            # Display the dataframe with selected items
+            st.dataframe(df_selected[['title', 'link']], use_container_width=True, height=300)
+            
+            # Add direct download button for selected items
+            csv_selected_file = df_selected.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="Download Selected Items as CSV",
+                data=csv_selected_file,
+                file_name=f"{_safe_filename_from_query(qname)}_selected_results.csv",
+                mime="text/csv",
+                help="Download a CSV with only your selected items",
+                key="simple_download_selected",
+                type="primary"
+            )
+        else:
+            st.info("No items selected. Use the checkboxes above to select items for preview and download.")
+
+        st.markdown("---")
+        st.subheader("Save Selected Items to a Folder (Optional)")
+        st.caption("Use this if you need to save to the project directory instead of downloading directly")
         folder_name = st.text_input("Enter folder name to save CSV (e.g., 'my_search_exports'):", key="simple_folder_name")
         if st.button("Save Selected Items to CSV", type="secondary", key="simple_save_selected"):
             _export_selected(selected_data_for_export, qname, folder_name or "my_search_exports")
