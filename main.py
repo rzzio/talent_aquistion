@@ -30,6 +30,25 @@ def _host(u: str) -> str:
     except Exception:
         return ""
 
+def _extract_domain(url):
+    """Extract the base domain from a URL"""
+    try:
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc
+        # Remove www. prefix if present
+        if domain.startswith('www.'):
+            domain = domain[4:]
+        return domain.lower()
+    except:
+        return ""
+
+def _is_subdomain_of_any(domain, filter_domains):
+    """Check if domain is a subdomain of any domain in filter_domains"""
+    for filter_domain in filter_domains:
+        if domain == filter_domain or domain.endswith('.' + filter_domain):
+            return True
+    return False
+
 def _safe_project_dir() -> str:
     try:
         return os.path.dirname(os.path.abspath(__file__))
@@ -1182,6 +1201,12 @@ def simple_ui():
             elif search_query:
                 with st.spinner(f"Fetching up to {num_results_to_fetch} search results…"):
                     data = get_google_search_results_simple(search_query, num_results_to_fetch)
+                    
+                    # Extract domains and add to results right away
+                    for item in data:
+                        if 'link' in item and item['link']:
+                            item['domain'] = _extract_domain(item['link'])
+                    
                     st.session_state['simple_search_data'] = data
                     st.session_state['simple_selected_items'] = {item['link']: True for item in data if item.get('link')}
                     st.session_state['simple_query_for_name'] = search_query
@@ -1199,20 +1224,156 @@ def simple_ui():
         st.markdown("---")
         st.markdown(f"**2. Results for '{qname}' ({len(data)} found)**")
 
-    
-        st.subheader("Download All Found Data")
-        df_full = pd.DataFrame(data)
-        col_dl_all, _ = st.columns([2, 5])
-        with col_dl_all:
-            csv_full_file = df_full.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download All Results as CSV",
-                data=csv_full_file,
-                file_name=f"{_safe_filename_from_query(qname)}_all_results.csv",
-                mime="text/csv",
-                help="Download a CSV containing all fetched links, titles, and snippets.",
-                key="simple_download_all"
+        # Simplified domain filtering UI
+        st.subheader("Filter Results by Domain")
+        
+        # Default domains to filter out
+        default_domains = ["linkedin.com", "indeed.com", "upwork.com", "fiverr.com", "freelancer.com", "github.io"]
+        
+        # Extract unique domains from data for checkbox filtering
+        all_domains = set()
+        domain_count = {}  # Track count of each domain for UI display
+        
+        for item in data:
+            domain = item.get('domain', '')
+            if domain:
+                # Add full domain
+                all_domains.add(domain)
+                domain_count[domain] = domain_count.get(domain, 0) + 1
+                
+                # Add parent domain if it's a subdomain
+                parts = domain.split('.')
+                if len(parts) > 2:
+                    parent_domain = '.'.join(parts[-2:])
+                    all_domains.add(parent_domain)
+        
+        # Group similar domains for better UI
+        job_sites = ["linkedin.com", "indeed.com", "glassdoor.com", "monster.com", "upwork.com", "fiverr.com", "freelancer.com"]
+        social_sites = ["facebook.com", "twitter.com", "instagram.com", "youtube.com"]
+        code_sites = ["github.io", "gitlab.io", "github.com", "gitlab.com", "bitbucket.org", "stackoverflow.com"]
+        
+        # Create filter UI with sections
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("##### Common Sites to Filter")
+            # Initialize filter state if not present
+            if 'simple_domain_filters' not in st.session_state:
+                st.session_state['simple_domain_filters'] = {domain: domain in default_domains for domain in all_domains}
+            
+            # Job sites
+            job_sites_found = [domain for domain in job_sites if domain in all_domains]
+            if job_sites_found:
+                st.markdown("**Job Sites:**")
+                for domain in job_sites_found:
+                    count = domain_count.get(domain, 0)
+                    label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
+                    st.session_state['simple_domain_filters'][domain] = st.checkbox(
+                        label, 
+                        value=st.session_state['simple_domain_filters'].get(domain, True),
+                        key=f"filter_{domain}"
+                    )
+            
+            # Code sites
+            code_sites_found = [domain for domain in code_sites if domain in all_domains]
+            if code_sites_found:
+                st.markdown("**Code Sites:**")
+                for domain in code_sites_found:
+                    count = domain_count.get(domain, 0)
+                    label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
+                    st.session_state['simple_domain_filters'][domain] = st.checkbox(
+                        label, 
+                        value=st.session_state['simple_domain_filters'].get(domain, True),
+                        key=f"filter_{domain}"
+                    )
+        
+        with col2:
+            # Social sites
+            social_sites_found = [domain for domain in social_sites if domain in all_domains]
+            if social_sites_found:
+                st.markdown("**Social Sites:**")
+                for domain in social_sites_found:
+                    count = domain_count.get(domain, 0)
+                    label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
+                    st.session_state['simple_domain_filters'][domain] = st.checkbox(
+                        label, 
+                        value=st.session_state['simple_domain_filters'].get(domain, True),
+                        key=f"filter_{domain}"
+                    )
+            
+            # Custom domain filter input
+            st.markdown("**Custom Domains to Filter:**")
+            custom_filter = st.text_area(
+                "Enter additional domains to filter (one per line):",
+                help="Results from these domains will be hidden. Example: example.com",
+                key="simple_custom_filter",
+                height=200
             )
+            custom_domains = [d.strip().lower() for d in custom_filter.split('\n') if d.strip()]
+            
+            # Button to apply custom filters
+            if st.button("Apply Custom Filters"):
+                for domain in custom_domains:
+                    st.session_state['simple_domain_filters'][domain] = True
+                st.success(f"Added {len(custom_domains)} custom domains to filter")
+        
+        # Get all domains to filter
+        domains_to_filter = [domain for domain, should_filter in st.session_state['simple_domain_filters'].items() if should_filter]
+        
+        # Apply filters
+        df_full = pd.DataFrame(data)
+        
+        if not df_full.empty and 'domain' in df_full.columns:
+            # Create a mask where True means the row should be kept (not filtered out)
+            keep_mask = df_full['domain'].apply(lambda domain: not _is_subdomain_of_any(domain, domains_to_filter))
+            
+            original_count = len(df_full)
+            df_filtered = df_full[keep_mask]
+            filtered_count = original_count - len(df_filtered)
+            
+            if filtered_count > 0:
+                st.info(f"🔍 Filtered out {filtered_count} results from {len(domains_to_filter)} domains.")
+            
+            # Store the filtered data for selection and display
+            filtered_data = df_filtered.to_dict('records')
+        else:
+            filtered_data = []
+            filtered_count = 0
+            st.warning("No data available to filter.")
+
+        # Button to reset filters
+        if st.button("Reset All Filters"):
+            st.session_state['simple_domain_filters'] = {domain: False for domain in all_domains}
+            st.rerun()
+
+        # # Display two download options - one for all data, one for filtered data
+        # st.subheader("Download Data")
+        # col_dl_all, col_dl_filtered = st.columns(2)
+        
+        # with col_dl_all:
+        #     csv_full_file = df_full.to_csv(index=False).encode('utf-8')
+        #     st.download_button(
+        #         label="Download ALL Results as CSV",
+        #         data=csv_full_file,
+        #         file_name=f"{_safe_filename_from_query(qname)}_all_results.csv",
+        #         mime="text/csv",
+        #         help="Download a CSV containing all fetched links without filtering",
+        #         key="simple_download_all"
+        #     )
+        
+        # with col_dl_filtered:
+        #     if filtered_data:
+        #         csv_filtered_file = pd.DataFrame(filtered_data).to_csv(index=False).encode('utf-8')
+        #         st.download_button(
+        #             label="Download FILTERED Results as CSV",
+        #             data=csv_filtered_file,
+        #             file_name=f"{_safe_filename_from_query(qname)}_filtered_results.csv",
+        #             mime="text/csv",
+        #             help="Download a CSV containing only the filtered results",
+        #             key="simple_download_filtered"
+        #         )
+        #     else:
+        #         st.write("No filtered data available")
 
         st.markdown("---")
         st.header("3. Review and Select Specific Items to Save")
@@ -1222,65 +1383,73 @@ def simple_ui():
             col_select_all, col_deselect_all, col_selected_count = st.columns([1, 1, 3])
             with col_select_all:
                 if st.form_submit_button("✅ Select All", use_container_width=True):
-                    st.session_state['simple_selected_items'] = {link: True for link in st.session_state['simple_selected_items']}
+                    st.session_state['simple_selected_items'] = {item.get('link'): True for item in filtered_data if item.get('link')}
             with col_deselect_all:
                 if st.form_submit_button("❌ Deselect All", use_container_width=True):
-                    st.session_state['simple_selected_items'] = {link: False for link in st.session_state['simple_selected_items']}
+                    st.session_state['simple_selected_items'] = {item.get('link'): False for item in filtered_data if item.get('link')}
             with col_selected_count:
-                selected_count = sum(1 for v in st.session_state['simple_selected_items'].values() if v)
+                filtered_links = [item.get('link') for item in filtered_data if item.get('link')]
+                selected_count = sum(1 for link in filtered_links if st.session_state['simple_selected_items'].get(link, False))
                 st.metric(label="Items Selected", value=selected_count)
 
         st.markdown("Use the checkboxes below to select the items you wish to save.")
         st.markdown("---")
 
         selected_data_for_export = []
-        for i, item in enumerate(data):
-            link = item.get('link')
-            title = item.get('title', 'No Title')
-            snippet = item.get('snippet', 'No snippet available.')
-            if not link:
-                continue
-
-            st.session_state['simple_selected_items'][link] = st.checkbox(
-                f"**{i+1}. {title}**",
-                value=st.session_state['simple_selected_items'].get(link, True),
-                key=f"simple_checkbox_{i}_{link}"
-            )
-            st.markdown(f"*{snippet}*")
-            st.markdown(f"[{link}]({link})")
-            st.markdown("---")
-
-            if st.session_state['simple_selected_items'][link]:
-                selected_data_for_export.append(item)
-
-        # Display selected items in a dataframe
-        if selected_data_for_export:
-            st.header("4. Selected Items Preview")
-            df_selected = pd.DataFrame(selected_data_for_export)
-            
-            # Display the dataframe with selected items
-            st.dataframe(df_selected[['title', 'link']], use_container_width=True, height=300)
-            
-            # Add direct download button for selected items
-            csv_selected_file = df_selected.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download Selected Items as CSV",
-                data=csv_selected_file,
-                file_name=f"{_safe_filename_from_query(qname)}_selected_results.csv",
-                mime="text/csv",
-                help="Download a CSV with only your selected items",
-                key="simple_download_selected",
-                type="primary"
-            )
+        
+        if not filtered_data:
+            st.info("No results to display after filtering. Try adjusting your filters.")
         else:
-            st.info("No items selected. Use the checkboxes above to select items for preview and download.")
+            # Use filtered data instead of all data
+            for i, item in enumerate(filtered_data):
+                link = item.get('link')
+                title = item.get('title', 'No Title')
+                snippet = item.get('snippet', 'No snippet available.')
+                domain = item.get('domain', '')
+                if not link:
+                    continue
 
-        st.markdown("---")
-        st.subheader("Save Selected Items to a Folder (Optional)")
-        st.caption("Use this if you need to save to the project directory instead of downloading directly")
-        folder_name = st.text_input("Enter folder name to save CSV (e.g., 'my_search_exports'):", key="simple_folder_name")
-        if st.button("Save Selected Items to CSV", type="secondary", key="simple_save_selected"):
-            _export_selected(selected_data_for_export, qname, folder_name or "my_search_exports")
+                st.session_state['simple_selected_items'][link] = st.checkbox(
+                    f"**{i+1}. {title}**",
+                    value=st.session_state['simple_selected_items'].get(link, True),
+                    key=f"simple_checkbox_{i}_{link}"
+                )
+                st.markdown(f"*{snippet}*")
+                st.markdown(f"[{link}]({link}) - *Domain: {domain}*")
+                st.markdown("---")
+
+                if st.session_state['simple_selected_items'].get(link, False):
+                    selected_data_for_export.append(item)
+
+            # Display selected items in a dataframe
+            if selected_data_for_export:
+                st.header("4. Selected Items Preview")
+                df_selected = pd.DataFrame(selected_data_for_export)
+                
+                # Display the dataframe with selected items - only from filtered data
+                display_cols = ['title', 'link', 'domain'] if 'domain' in df_selected.columns else ['title', 'link']
+                st.dataframe(df_selected[display_cols], use_container_width=True, height=300)
+                
+                # Add direct download button for selected items
+                csv_selected_file = df_selected.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download Selected Items as CSV",
+                    data=csv_selected_file,
+                    file_name=f"{_safe_filename_from_query(qname)}_selected_results.csv",
+                    mime="text/csv",
+                    help="Download a CSV with only your selected items",
+                    key="simple_download_selected",
+                    type="primary"
+                )
+            else:
+                st.info("No items selected. Use the checkboxes above to select items for preview and download.")
+
+            st.markdown("---")
+            st.subheader("Save Selected Items to a Folder (Optional)")
+            st.caption("Use this if you need to save to the project directory instead of downloading directly")
+            folder_name = st.text_input("Enter folder name to save CSV (e.g., 'my_search_exports'):", key="simple_folder_name")
+            if st.button("Save Selected Items to CSV", type="secondary", key="simple_save_selected"):
+                _export_selected(selected_data_for_export, qname, folder_name or "my_search_exports")
 
 
 if mode == "Advanced":
