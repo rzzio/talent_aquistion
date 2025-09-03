@@ -11,6 +11,8 @@ from datetime import datetime
 
 import scrape_resume_details as scraper
 
+# Initialize THRESHOLD with a default value - we'll let users change this in the UI
+DEFAULT_THRESHOLD = 2
 
 load_dotenv()
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
@@ -68,7 +70,7 @@ with cols[0]:
     st.image(os.path.join(_safe_project_dir(), "nobullcode_favicon.png"), width=80)
 with cols[1]:
     st.title("No Bull Code Talent Sourcing")
-    st.caption("Switch between a simple extractor and an advanced, role-aware fan-out search. Export results and review selections with ease.")
+    st.caption("Switch between a general extractor and an advanced, role-aware fan-out search. Export results and review selections with ease.")
 
 
 def _safe_filename_from_query(q: str) -> str:
@@ -490,9 +492,9 @@ def display_csv_viewer():
 st.markdown("### Mode")
 mode = st.radio(
     "Choose a tool:",
-    options=["Simple", "Advanced"],
+    options=["General", "Advanced"],
     horizontal=True,
-    index=1, 
+    index=0, 
 )
 
 # st.divider()
@@ -1195,7 +1197,7 @@ def simple_ui():
 
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Search Google (Simple)", type="primary", key="simple_run"):
+        if st.button("Search Google (General)", type="primary", key="simple_run"):
             if not SERPER_API_KEY:
                 st.error("SERPER_API_KEY not found in .env file. Please set it up.")
             elif search_query:
@@ -1232,11 +1234,45 @@ def simple_ui():
             st.markdown("### Combined Filtering")
             st.info("Apply both domain and keyword filters simultaneously to refine your results.")
             
+            # Initialize threshold value in session state if not present
+            if 'threshold_value' not in st.session_state:
+                st.session_state['threshold_value'] = DEFAULT_THRESHOLD
+                
             # Two columns for filter types
             filter_col1, filter_col2 = st.columns(2)
             
             with filter_col1:
                 st.markdown("#### Domain Filtering")
+
+                # Add threshold control
+                st.markdown("**Common Domain Threshold:**")
+
+                col1, col2, col3 = st.columns([1, 1, 1])
+
+                with col1:
+                    if st.button("➖", key="decrease_threshold"):
+                        if st.session_state['threshold_value'] > 1:
+                            st.session_state['threshold_value'] -= 1
+                            st.rerun()
+
+                with col2:
+                    st.markdown(
+                        f"<h3 style='text-align: center; margin: 0;'>{st.session_state['threshold_value']}</h3>",
+                        unsafe_allow_html=True
+                    )
+
+                with col3:
+                    if st.button("➕", key="increase_threshold"):
+                        st.session_state['threshold_value'] += 1
+                        st.rerun()
+
+                st.caption("Domains appearing this many times or more will be considered 'common'")
+
+                
+           
+                
+                # Use the threshold from session state
+                THRESHOLD = st.session_state['threshold_value']
                 
                 # Default domains to filter out
                 default_domains = ["linkedin.com", "indeed.com", "upwork.com", "fiverr.com", "freelancer.com", "github.io"]
@@ -1258,6 +1294,9 @@ def simple_ui():
                             parent_domain = '.'.join(parts[-2:])
                             all_domains.add(parent_domain)
                 
+                # Find common domains that exceed the threshold
+                common_domains = [domain for domain, count in domain_count.items() if count >= THRESHOLD]
+                
                 # Group similar domains for better UI
                 job_sites = ["linkedin.com", "indeed.com", "glassdoor.com", "monster.com", "upwork.com", "fiverr.com", "freelancer.com"]
                 social_sites = ["facebook.com", "twitter.com", "instagram.com", "youtube.com"]
@@ -1267,6 +1306,30 @@ def simple_ui():
                 if 'simple_domain_filters' not in st.session_state:
                     st.session_state['simple_domain_filters'] = {domain: domain in default_domains for domain in all_domains}
                 
+                # Display common domains section first (new feature)
+                if common_domains:
+                    with st.expander("Common Repeated Websites", expanded=True):
+                        st.info(f"These domains appear {THRESHOLD} or more times in your results")
+                        all_common = st.checkbox("Filter ALL common domains", key="filter_all_common")
+                        
+                        for domain in sorted(common_domains, key=lambda d: domain_count.get(d, 0), reverse=True):
+                            count = domain_count.get(domain, 0)
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                label = f"Filter {domain}"
+                                # If "Filter ALL" is checked, force this domain to be filtered
+                                if all_common:
+                                    st.session_state['simple_domain_filters'][domain] = True
+                                    st.checkbox(label, value=True, key=f"common_{domain}", disabled=True)
+                                else:
+                                    st.session_state['simple_domain_filters'][domain] = st.checkbox(
+                                        label, 
+                                        value=st.session_state['simple_domain_filters'].get(domain, False),
+                                        key=f"common_{domain}"
+                                    )
+                            with col2:
+                                st.metric("Count", count)
+
                 # Display domains in categories with collapsible sections
                 with st.expander("Job Sites", expanded=True):
                     job_sites_found = [domain for domain in job_sites if domain in all_domains]
@@ -1606,7 +1669,7 @@ def simple_ui():
             st.caption("Use this if you need to save to the project directory instead of downloading directly")
             folder_name = st.text_input("Enter folder name to save CSV (e.g., 'my_search_exports'):", key="simple_folder_name")
             if st.button("Save Selected Items to CSV", type="secondary", key="simple_save_selected"):
-                _export_selected(selected_data_for_export, qname, folder_name or "my_search_exports")
+                               _export_selected(selected_data_for_export, qname, folder_name or "my_search_exports")
 
 
 if mode == "Advanced":
