@@ -1224,98 +1224,198 @@ def simple_ui():
         st.markdown("---")
         st.markdown(f"**2. Results for '{qname}' ({len(data)} found)**")
 
-        # Simplified domain filtering UI
-        st.subheader("Filter Results by Domain")
+        # Unified filtering section
+        st.subheader("Filter Results")
         
-        # Default domains to filter out
-        default_domains = ["linkedin.com", "indeed.com", "upwork.com", "fiverr.com", "freelancer.com", "github.io"]
-        
-        # Extract unique domains from data for checkbox filtering
-        all_domains = set()
-        domain_count = {}  # Track count of each domain for UI display
-        
-        for item in data:
-            domain = item.get('domain', '')
-            if domain:
-                # Add full domain
-                all_domains.add(domain)
-                domain_count[domain] = domain_count.get(domain, 0) + 1
+        # Create expandable sections for different filter types
+        with st.expander("Filter Settings", expanded=True):
+            st.markdown("### Combined Filtering")
+            st.info("Apply both domain and keyword filters simultaneously to refine your results.")
+            
+            # Two columns for filter types
+            filter_col1, filter_col2 = st.columns(2)
+            
+            with filter_col1:
+                st.markdown("#### Domain Filtering")
                 
-                # Add parent domain if it's a subdomain
-                parts = domain.split('.')
-                if len(parts) > 2:
-                    parent_domain = '.'.join(parts[-2:])
-                    all_domains.add(parent_domain)
-        
-        # Group similar domains for better UI
-        job_sites = ["linkedin.com", "indeed.com", "glassdoor.com", "monster.com", "upwork.com", "fiverr.com", "freelancer.com"]
-        social_sites = ["facebook.com", "twitter.com", "instagram.com", "youtube.com"]
-        code_sites = ["github.io", "gitlab.io", "github.com", "gitlab.com", "bitbucket.org", "stackoverflow.com"]
-        
-        # Create filter UI with sections
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("##### Common Sites to Filter")
-            # Initialize filter state if not present
-            if 'simple_domain_filters' not in st.session_state:
-                st.session_state['simple_domain_filters'] = {domain: domain in default_domains for domain in all_domains}
+                # Default domains to filter out
+                default_domains = ["linkedin.com", "indeed.com", "upwork.com", "fiverr.com", "freelancer.com", "github.io"]
+                
+                # Extract unique domains from data for checkbox filtering
+                all_domains = set()
+                domain_count = {}  # Track count of each domain for UI display
+                
+                for item in data:
+                    domain = item.get('domain', '')
+                    if domain:
+                        # Add full domain
+                        all_domains.add(domain)
+                        domain_count[domain] = domain_count.get(domain, 0) + 1
+                        
+                        # Add parent domain if it's a subdomain
+                        parts = domain.split('.')
+                        if len(parts) > 2:
+                            parent_domain = '.'.join(parts[-2:])
+                            all_domains.add(parent_domain)
+                
+                # Group similar domains for better UI
+                job_sites = ["linkedin.com", "indeed.com", "glassdoor.com", "monster.com", "upwork.com", "fiverr.com", "freelancer.com"]
+                social_sites = ["facebook.com", "twitter.com", "instagram.com", "youtube.com"]
+                code_sites = ["github.io", "gitlab.io", "github.com", "gitlab.com", "bitbucket.org", "stackoverflow.com"]
+                
+                # Initialize filter state if not present
+                if 'simple_domain_filters' not in st.session_state:
+                    st.session_state['simple_domain_filters'] = {domain: domain in default_domains for domain in all_domains}
+                
+                # Display domains in categories with collapsible sections
+                with st.expander("Job Sites", expanded=True):
+                    job_sites_found = [domain for domain in job_sites if domain in all_domains]
+                    if job_sites_found:
+                        for domain in job_sites_found:
+                            count = domain_count.get(domain, 0)
+                            label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
+                            st.session_state['simple_domain_filters'][domain] = st.checkbox(
+                                label, 
+                                value=st.session_state['simple_domain_filters'].get(domain, True),
+                                key=f"filter_{domain}"
+                            )
+                    else:
+                        st.info("No job sites found in results")
+                
+                with st.expander("Social & Code Sites", expanded=True):
+                    # Social sites
+                    social_sites_found = [domain for domain in social_sites if domain in all_domains]
+                    if social_sites_found:
+                        st.markdown("**Social Sites:**")
+                        for domain in social_sites_found:
+                            count = domain_count.get(domain, 0)
+                            label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
+                            st.session_state['simple_domain_filters'][domain] = st.checkbox(
+                                label, 
+                                value=st.session_state['simple_domain_filters'].get(domain, True),
+                                key=f"filter_{domain}"
+                            )
+                    
+                    # Code sites
+                    code_sites_found = [domain for domain in code_sites if domain in all_domains]
+                    if code_sites_found:
+                        st.markdown("**Code Sites:**")
+                        for domain in code_sites_found:
+                            count = domain_count.get(domain, 0)
+                            label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
+                            st.session_state['simple_domain_filters'][domain] = st.checkbox(
+                                label, 
+                                value=st.session_state['simple_domain_filters'].get(domain, True),
+                                key=f"filter_{domain}"
+                            )
+                
+                # Custom domain filter input
+                st.markdown("**Custom Domains to Filter:**")
+                custom_filter = st.text_area(
+                    "Enter additional domains to filter (one per line):",
+                    help="Results from these domains will be hidden. Example: example.com",
+                    key="simple_custom_filter",
+                    height=100
+                )
+                custom_domains = [d.strip().lower() for d in custom_filter.split('\n') if d.strip()]
+                
+                # Button to apply custom filters
+                if st.button("Apply Custom Domain Filters"):
+                    for domain in custom_domains:
+                        st.session_state['simple_domain_filters'][domain] = True
+                    st.success(f"Added {len(custom_domains)} custom domains to filter")
             
-            # Job sites
-            job_sites_found = [domain for domain in job_sites if domain in all_domains]
-            if job_sites_found:
-                st.markdown("**Job Sites:**")
-                for domain in job_sites_found:
-                    count = domain_count.get(domain, 0)
-                    label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
-                    st.session_state['simple_domain_filters'][domain] = st.checkbox(
-                        label, 
-                        value=st.session_state['simple_domain_filters'].get(domain, True),
-                        key=f"filter_{domain}"
+            with filter_col2:
+                st.markdown("#### Keyword Filtering")
+                
+                # Initialize keyword filter settings if not present
+                if 'simple_keyword_filters' not in st.session_state:
+                    st.session_state['simple_keyword_filters'] = {
+                        'keywords': [],
+                        'filter_in_title': True,
+                        'filter_in_snippet': True,
+                        'is_inclusive': False  # False means exclusive (filter out), True means inclusive (keep only)
+                    }
+                
+                # Filter type selection (inclusive or exclusive)
+                filter_mode = st.radio(
+                    "Filter mode:",
+                    ["Exclude results with these keywords", "Include ONLY results with these keywords"],
+                    index=0 if not st.session_state['simple_keyword_filters']['is_inclusive'] else 1,
+                    key="keyword_filter_mode"
+                )
+                st.session_state['simple_keyword_filters']['is_inclusive'] = (filter_mode == "Include ONLY results with these keywords")
+                
+                # Where to apply the filter
+                st.markdown("**Apply keyword filters to:**")
+                col1, col2 = st.columns(2)
+                with col1:
+                    filter_in_title = st.checkbox(
+                        "Titles", 
+                        value=st.session_state['simple_keyword_filters']['filter_in_title'],
+                        help="Apply keyword filtering to result titles",
+                        key="filter_in_title"
                     )
-            
-            # Code sites
-            code_sites_found = [domain for domain in code_sites if domain in all_domains]
-            if code_sites_found:
-                st.markdown("**Code Sites:**")
-                for domain in code_sites_found:
-                    count = domain_count.get(domain, 0)
-                    label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
-                    st.session_state['simple_domain_filters'][domain] = st.checkbox(
-                        label, 
-                        value=st.session_state['simple_domain_filters'].get(domain, True),
-                        key=f"filter_{domain}"
+                    st.session_state['simple_keyword_filters']['filter_in_title'] = filter_in_title
+                
+                with col2:
+                    filter_in_snippet = st.checkbox(
+                        "Snippets", 
+                        value=st.session_state['simple_keyword_filters']['filter_in_snippet'],
+                        help="Apply keyword filtering to result snippets",
+                        key="filter_in_snippet"
                     )
+                    st.session_state['simple_keyword_filters']['filter_in_snippet'] = filter_in_snippet
+                
+                # Keyword input
+                st.markdown("**Enter Keywords to Filter:**")
+                keyword_input = st.text_area(
+                    "Enter keywords (one per line):",
+                    value="\n".join(st.session_state['simple_keyword_filters']['keywords']),
+                    help="Results containing these keywords will be filtered according to your selection above",
+                    key="keyword_filter_input",
+                    height=100
+                )
+                
+                # Process keywords
+                keywords = [k.strip().lower() for k in keyword_input.split('\n') if k.strip()]
+                
+                # Button to apply keyword filters
+                if st.button("Apply Keyword Filters"):
+                    st.session_state['simple_keyword_filters']['keywords'] = keywords
+                    if keywords:
+                        filter_type = "keep only matching" if st.session_state['simple_keyword_filters']['is_inclusive'] else "exclude matching"
+                        where_applied = []
+                        if filter_in_title:
+                            where_applied.append("titles")
+                        if filter_in_snippet:
+                            where_applied.append("snippets")
+                        
+                        if where_applied:
+                            st.success(f"Applied keyword filters to {' and '.join(where_applied)} ({filter_type})")
+                        else:
+                            st.warning("Please select at least one area to apply filters (title or snippet)")
+                    else:
+                        st.info("No keywords specified. Filter will not be applied.")
         
-        with col2:
-            # Social sites
-            social_sites_found = [domain for domain in social_sites if domain in all_domains]
-            if social_sites_found:
-                st.markdown("**Social Sites:**")
-                for domain in social_sites_found:
-                    count = domain_count.get(domain, 0)
-                    label = f"Filter {domain}" + (f" ({count})" if count > 0 else "")
-                    st.session_state['simple_domain_filters'][domain] = st.checkbox(
-                        label, 
-                        value=st.session_state['simple_domain_filters'].get(domain, True),
-                        key=f"filter_{domain}"
-                    )
-            
-            # Custom domain filter input
-            st.markdown("**Custom Domains to Filter:**")
-            custom_filter = st.text_area(
-                "Enter additional domains to filter (one per line):",
-                help="Results from these domains will be hidden. Example: example.com",
-                key="simple_custom_filter",
-                height=200
-            )
-            custom_domains = [d.strip().lower() for d in custom_filter.split('\n') if d.strip()]
-            
-            # Button to apply custom filters
-            if st.button("Apply Custom Filters"):
-                for domain in custom_domains:
-                    st.session_state['simple_domain_filters'][domain] = True
-                st.success(f"Added {len(custom_domains)} custom domains to filter")
+        # Filter control buttons at the bottom of the expander
+        col_apply, col_reset, col_spacer = st.columns([1, 1, 2])
+        
+        with col_apply:
+            if st.button("🔍 Apply All Filters", type="primary"):
+                st.rerun()
+                
+        with col_reset:
+            if st.button("↻ Reset All Filters"):
+                if 'all_domains' in locals():
+                    st.session_state['simple_domain_filters'] = {domain: False for domain in all_domains}
+                st.session_state['simple_keyword_filters'] = {
+                    'keywords': [],
+                    'filter_in_title': True,
+                    'filter_in_snippet': True,
+                    'is_inclusive': False
+                }
+                st.rerun()
         
         # Get all domains to filter
         domains_to_filter = [domain for domain, should_filter in st.session_state['simple_domain_filters'].items() if should_filter]
@@ -1323,58 +1423,113 @@ def simple_ui():
         # Apply filters
         df_full = pd.DataFrame(data)
         
+        # First apply domain filtering
         if not df_full.empty and 'domain' in df_full.columns:
             # Create a mask where True means the row should be kept (not filtered out)
-            keep_mask = df_full['domain'].apply(lambda domain: not _is_subdomain_of_any(domain, domains_to_filter))
+            domain_keep_mask = df_full['domain'].apply(lambda domain: not _is_subdomain_of_any(domain, domains_to_filter))
             
             original_count = len(df_full)
-            df_filtered = df_full[keep_mask]
-            filtered_count = original_count - len(df_filtered)
-            
-            if filtered_count > 0:
-                st.info(f"🔍 Filtered out {filtered_count} results from {len(domains_to_filter)} domains.")
-            
-            # Store the filtered data for selection and display
-            filtered_data = df_filtered.to_dict('records')
+            df_filtered_by_domain = df_full[domain_keep_mask]
+            domain_filtered_count = original_count - len(df_filtered_by_domain)
         else:
-            filtered_data = []
-            filtered_count = 0
-            st.warning("No data available to filter.")
-
-        # Button to reset filters
-        if st.button("Reset All Filters"):
-            st.session_state['simple_domain_filters'] = {domain: False for domain in all_domains}
-            st.rerun()
-
-        # # Display two download options - one for all data, one for filtered data
-        # st.subheader("Download Data")
-        # col_dl_all, col_dl_filtered = st.columns(2)
+            df_filtered_by_domain = df_full
+            domain_filtered_count = 0
         
-        # with col_dl_all:
-        #     csv_full_file = df_full.to_csv(index=False).encode('utf-8')
-        #     st.download_button(
-        #         label="Download ALL Results as CSV",
-        #         data=csv_full_file,
-        #         file_name=f"{_safe_filename_from_query(qname)}_all_results.csv",
-        #         mime="text/csv",
-        #         help="Download a CSV containing all fetched links without filtering",
-        #         key="simple_download_all"
-        #     )
+        # Then apply keyword filtering
+        keywords = st.session_state['simple_keyword_filters'].get('keywords', [])
+        filter_in_title = st.session_state['simple_keyword_filters'].get('filter_in_title', True)
+        filter_in_snippet = st.session_state['simple_keyword_filters'].get('filter_in_snippet', True)
+        is_inclusive = st.session_state['simple_keyword_filters'].get('is_inclusive', False)
         
-        # with col_dl_filtered:
-        #     if filtered_data:
-        #         csv_filtered_file = pd.DataFrame(filtered_data).to_csv(index=False).encode('utf-8')
-        #         st.download_button(
-        #             label="Download FILTERED Results as CSV",
-        #             data=csv_filtered_file,
-        #             file_name=f"{_safe_filename_from_query(qname)}_filtered_results.csv",
-        #             mime="text/csv",
-        #             help="Download a CSV containing only the filtered results",
-        #             key="simple_download_filtered"
-        #         )
-        #     else:
-        #         st.write("No filtered data available")
-
+        if keywords and (filter_in_title or filter_in_snippet) and not df_filtered_by_domain.empty:
+            # Function to check if text contains any of the keywords
+            def contains_any_keyword(text, keywords):
+                if not text or not isinstance(text, str):
+                    return False
+                text_lower = text.lower()
+                return any(keyword.lower() in text_lower for keyword in keywords)
+            
+            # Create masks for title and snippet based on keywords
+            title_mask = pd.Series(True, index=df_filtered_by_domain.index)
+            snippet_mask = pd.Series(True, index=df_filtered_by_domain.index)
+            
+            if filter_in_title and 'title' in df_filtered_by_domain.columns:
+                title_mask = df_filtered_by_domain['title'].apply(
+                    lambda title: not contains_any_keyword(title, keywords) if not is_inclusive else contains_any_keyword(title, keywords)
+                )
+            
+            if filter_in_snippet and 'snippet' in df_filtered_by_domain.columns:
+                snippet_mask = df_filtered_by_domain['snippet'].apply(
+                    lambda snippet: not contains_any_keyword(snippet, keywords) if not is_inclusive else contains_any_keyword(snippet, keywords)
+                )
+            
+            # Combine masks based on filter settings
+            if filter_in_title and filter_in_snippet:
+                if is_inclusive:
+                    # In inclusive mode with both fields, keep if EITHER title OR snippet contains keywords
+                    keyword_keep_mask = title_mask | snippet_mask
+                else:
+                    # In exclusive mode with both fields, keep if BOTH title AND snippet don't contain keywords
+                    keyword_keep_mask = title_mask & snippet_mask
+            elif filter_in_title:
+                keyword_keep_mask = title_mask
+            elif filter_in_snippet:
+                keyword_keep_mask = snippet_mask
+            else:
+                keyword_keep_mask = pd.Series(True, index=df_filtered_by_domain.index)
+            
+            before_keyword_filter_count = len(df_filtered_by_domain)
+            df_filtered = df_filtered_by_domain[keyword_keep_mask]
+            keyword_filtered_count = before_keyword_filter_count - len(df_filtered)
+        else:
+            df_filtered = df_filtered_by_domain
+            keyword_filtered_count = 0
+        
+        # Store the final filtered data for selection and display
+        filtered_data = df_filtered.to_dict('records')
+        
+        # Filter summary
+        filter_summary_col1, filter_summary_col2, filter_summary_col3 = st.columns([1, 1, 1])
+        with filter_summary_col1:
+            st.metric("Total Results", len(data))
+        with filter_summary_col2:
+            st.metric("Domain Filtered", domain_filtered_count, delta=-domain_filtered_count, delta_color="off")
+        with filter_summary_col3:
+            st.metric("Keyword Filtered", keyword_filtered_count, delta=-keyword_filtered_count, delta_color="off")
+        
+        # Display active filters
+        active_filter_cols = st.columns([1, 1])
+        with active_filter_cols[0]:
+            if domains_to_filter:
+                st.markdown("**Active Domain Filters:**")
+                for domain in domains_to_filter[:10]:  # Limit to avoid too long list
+                    st.markdown(f"- {domain}")
+                if len(domains_to_filter) > 10:
+                    st.markdown(f"- ... and {len(domains_to_filter) - 10} more")
+        
+        with active_filter_cols[1]:
+            if keywords:
+                mode_text = "Include only" if is_inclusive else "Exclude"
+                targets = []
+                if filter_in_title:
+                    targets.append("titles")
+                if filter_in_snippet:
+                    targets.append("snippets")
+                target_text = " and ".join(targets)
+                
+                st.markdown(f"**Active Keyword Filters ({mode_text}, {target_text}):**")
+                for keyword in keywords[:10]:  # Limit to avoid too long list
+                    st.markdown(f"- {keyword}")
+                if len(keywords) > 10:
+                    st.markdown(f"- ... and {len(keywords) - 10} more")
+        
+        # Final filtering status message
+        if len(filtered_data) == 0:
+            st.warning("⚠️ All results were filtered out. Consider relaxing your filter criteria.")
+        elif domain_filtered_count > 0 or keyword_filtered_count > 0:
+            total_filtered_count = domain_filtered_count + keyword_filtered_count
+            st.success(f"✅ Showing {len(filtered_data)} results after filtering out {total_filtered_count} items.")
+        
         st.markdown("---")
         st.header("3. Review and Select Specific Items to Save")
 
@@ -1400,26 +1555,28 @@ def simple_ui():
         if not filtered_data:
             st.info("No results to display after filtering. Try adjusting your filters.")
         else:
-            # Use filtered data instead of all data
-            for i, item in enumerate(filtered_data):
-                link = item.get('link')
-                title = item.get('title', 'No Title')
-                snippet = item.get('snippet', 'No snippet available.')
-                domain = item.get('domain', '')
-                if not link:
-                    continue
+            # Add a single expander for all results
+            with st.expander("**Click to show/hide all search results**", expanded=False):
+                # Use filtered data instead of all data
+                for i, item in enumerate(filtered_data):
+                    link = item.get('link')
+                    title = item.get('title', 'No Title')
+                    snippet = item.get('snippet', 'No snippet available.')
+                    domain = item.get('domain', '')
+                    if not link:
+                        continue
 
-                st.session_state['simple_selected_items'][link] = st.checkbox(
-                    f"**{i+1}. {title}**",
-                    value=st.session_state['simple_selected_items'].get(link, True),
-                    key=f"simple_checkbox_{i}_{link}"
-                )
-                st.markdown(f"*{snippet}*")
-                st.markdown(f"[{link}]({link}) - *Domain: {domain}*")
-                st.markdown("---")
+                    st.session_state['simple_selected_items'][link] = st.checkbox(
+                        f"**{i+1}. {title}**",
+                        value=st.session_state['simple_selected_items'].get(link, True),
+                        key=f"simple_checkbox_{i}_{link}"
+                    )
+                    st.markdown(f"*{snippet}*")
+                    st.markdown(f"[{link}]({link}) - *Domain: {domain}*")
+                    st.markdown("---")
 
-                if st.session_state['simple_selected_items'].get(link, False):
-                    selected_data_for_export.append(item)
+                    if st.session_state['simple_selected_items'].get(link, False):
+                        selected_data_for_export.append(item)
 
             # Display selected items in a dataframe
             if selected_data_for_export:
@@ -1427,8 +1584,8 @@ def simple_ui():
                 df_selected = pd.DataFrame(selected_data_for_export)
                 
                 # Display the dataframe with selected items - only from filtered data
-                display_cols = ['title', 'link', 'domain'] if 'domain' in df_selected.columns else ['title', 'link']
-                st.dataframe(df_selected[display_cols], use_container_width=True, height=300)
+                display_cols = ['title', 'link','snippet', 'domain'] if 'domain' in df_selected.columns else ['title', 'link']
+                st.dataframe(df_selected[display_cols], use_container_width=True, height=800)
                 
                 # Add direct download button for selected items
                 csv_selected_file = df_selected.to_csv(index=False).encode('utf-8')
