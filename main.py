@@ -24,7 +24,6 @@ DEFAULT_HL = "en"
 DEFAULT_LOCATION = "Kathmandu, Nepal"
 
 
-st.set_page_config(layout="wide", page_title="No Bull Code Talent Sourcing (Simple & Advanced)")
 
 def _host(u: str) -> str:
     try:
@@ -1308,7 +1307,9 @@ def simple_ui():
                 
                 # Display common domains section first (new feature)
                 if common_domains:
-                    with st.expander("Common Repeated Websites", expanded=True):
+                    st.markdown("### Common Repeated Websites")
+                    common_container = st.container()
+                    with common_container:
                         st.info(f"These domains appear {THRESHOLD} or more times in your results")
                         all_common = st.checkbox("Filter ALL common domains", key="filter_all_common")
                         
@@ -1330,8 +1331,12 @@ def simple_ui():
                             with col2:
                                 st.metric("Count", count)
 
-                # Display domains in categories with collapsible sections
-                with st.expander("Job Sites", expanded=True):
+                st.divider()  # Visual separator
+                
+                # Replace next expander
+                st.markdown("### Job Sites")
+                job_container = st.container()
+                with job_container:
                     job_sites_found = [domain for domain in job_sites if domain in all_domains]
                     if job_sites_found:
                         for domain in job_sites_found:
@@ -1345,7 +1350,12 @@ def simple_ui():
                     else:
                         st.info("No job sites found in results")
                 
-                with st.expander("Social & Code Sites", expanded=True):
+                st.divider()  # Visual separator
+                
+                # Replace next expander
+                st.markdown("### Social & Code Sites")
+                social_code_container = st.container()
+                with social_code_container:
                     # Social sites
                     social_sites_found = [domain for domain in social_sites if domain in all_domains]
                     if social_sites_found:
